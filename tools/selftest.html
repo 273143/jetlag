@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>selftest</title></head>
+<body>
+<pre id="out">running…</pre>
+<script type="module">
+// Headless engine test. Plays automated runs against both hider personalities
+// and asserts the invariants that matter:
+//
+//   1. the hider is never eliminated from the candidate set by their own answer
+//   2. the candidate set never empties
+//   3. a seeker that keeps asking and searching always finishes
+//   4. nothing throws
+//
+// Run via tools/test.sh.
+
+import { loadWorld } from "../js/data.js";
+import { newGame, ask, travel, challengeStep, askBlocker, travelBlocker, finalScore, seeker, nextHop } from "../js/game.js";
+import { RULES } from "../js/rules.js";
+import { mulberry32 } from "../js/deck.js";
+import { haversine } from "../js/geo.js";
+import { MAPS } from "../js/data.js";
+
+const lines = [];
+const log = (s) => { lines.push(s); document.getElementById("out").textContent = lines.join("\n"); console.log(s); };
+let failures = 0;
+const fail = (s) => { failures++; log("FAIL: " + s); };
+
+let world = null;   // set per map by the driver at the bottom
+
+/** One step along the shortest path out of the maze, so the bot does not
+ *  wander for the whole budget the way a random walk would. */
+function mazeStep(maze, at) {
+  const { w, h, cells } = maze;
+  const goal = w * h - 1;
+  const DIRS = [{ k: "N", bit: 1, d: -w }, { k: "E", bit: 2, d: 1 }, { k: "S", bit: 4, d: w }, { k: "W", bit: 8, d: -1 }];
+  const prev = new Map([[at, null]]);
+  const queue = [at];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (cur === goal) break;
+    for (const dir of DIRS) {
+      if (!(cells[cur] & dir.bit)) continue;
+      const nxt = cur + dir.d;
+      if (nxt < 0 || nxt >= w * h || prev.has(nxt)) continue;
+      prev.set(nxt, { from: cur, k: dir.k });
+      queue.push(nxt);
+    }
+  }
+  let node = goal;
+  while (prev.get(node) && prev.get(node).from !== at) node = prev.get(node).from;
+  return prev.get(node) ? prev.get(node).k : "N";
+}
+
+/** Play one full run with a simple but competent automatic seeker. */
+function playRun(difficulty, seed) {
+  const rng = mulberry32(seed * 7919 + 13);
+  const state = newGame(world, { difficulty, seed });
+  let searchTarget = null;
+  let turns = 0;
+
+  // The opening position: everything the seeker is shown has to follow from
+  // the head start, and the hider has to be somewhere they could have got to.
+  // (Checked here rather than in checkInvariants because the hider's Move
+  // powerup legitimately steps them one station outside the window later on.)
+  const window = state.hiding.minutes;
+  const outside = state.candidates.filter((c) => state.hiding.reach.minutes[c.id] > window);
+  if (outside.length)
+    fail(`${difficulty}/${seed}: ${outside.length} candidate(s) are further than the ${window}m head start`);
+  if (!state.candidates.length)
+    fail(`${difficulty}/${seed}: nowhere to hide inside the ${window}m head start`);
+  if (state.hider.committed && state.hiding.reach.minutes[state.hider.committed.id] > window)
+    fail(`${difficulty}/${seed}: the hider is at ${state.hider.committed.name}, ` +
+         `${Math.round(state.hiding.reach.minutes[state.hider.committed.id])}m out of a ${window}m head start`);
+  starts.add(state.startId);
+  openings.push(state.candidates.length);
+
+  while (state.status === "playing" && turns++ < 400) {
+    // Clear any curse minigame first.
+    let guard = 0;
+    while (state.challenge && guard++ < 200) {
+      const c = state.challenge;
+      if (c.type === "hangman") challengeStep(state, "abcdefghijklmnopqrstuvwxyz"[Math.floor(rng() * 26)]);
+      else if (c.type === "tumble") challengeStep(state, null);
+      else if (c.type === "labyrinth") challengeStep(state, mazeStep(c.maze, c.at));
+      else break;
+    }
+    if (state.challenge) { fail(`${difficulty}/${seed}: stuck in a ${state.challenge.type} challenge`); break; }
+
+    checkInvariants(state, difficulty, seed);
+
+    const askable = state.questions.filter((q) => !askBlocker(state, q));
+
+    // A thermometer is only half a question: it has to be walked off. While
+    // one is pending nothing else may be asked, so travel far enough to read
+    // it. This is the most stateful path in the engine, so it is exercised
+    // deliberately rather than left to chance.
+    if (state.pendingThermo) {
+      const from = world.byId.get(state.pendingThermo.fromId);
+      const need = state.pendingThermo.km;
+      const far = world.stations
+        .filter((s) => s.id !== state.seekerId &&
+                       haversine(s, from) >= need && isFinite(state.travel.minutes[s.id]))
+        .sort((a, b) => state.travel.minutes[a.id] - state.travel.minutes[b.id]);
+      if (!far.length) { fail(`${difficulty}/${seed}: nowhere ${need} km from ${from.name}`); break; }
+      // Travel is one line at a time on a timetabled map, so "go there" is a
+      // plan: take the first leg of it and come round again.
+      travel(state, nextHop(state, far[0].id) ?? far[0].id);
+      // Walking off a thermometer can walk you straight into the hider, which
+      // ends the run before there is anything left to read. That is a win, not
+      // a stuck thermometer, so check the run is still going before judging.
+      if (state.status !== "playing") break;
+      // One leg may not be far enough yet; the loop will take the next.
+      continue;
+    }
+    if (rng() < 0.16) {
+      const thermo = askable.filter((q) => q.cat === "thermometer");
+      if (thermo.length) { ask(state, thermo[Math.floor(rng() * thermo.length)]); continue; }
+    }
+    if (rng() < 0.08) {
+      const photo = askable.filter((q) => q.visual);
+      if (photo.length) { ask(state, photo[Math.floor(rng() * photo.length)]); continue; }
+    }
+
+    // Down to one candidate, or feeling lucky: go and look.
+    if (state.candidates.length <= 1 || !askable.length || rng() < 0.12) {
+      // Stick with a destination until you get there. With travel restricted
+      // to one line at a time, picking a fresh random candidate every turn
+      // walks half a leg towards one, half a leg back towards another, and
+      // arrives nowhere -- which is a bot bug, but it is also exactly how a
+      // player loses an hour, so it is worth the test holding a target.
+      if (searchTarget == null || !state.candidates.some((c) => c.id === searchTarget)) {
+        const pick = state.candidates[Math.floor(rng() * state.candidates.length)];
+        if (!pick) { fail(`${difficulty}/${seed}: no candidates left to search`); break; }
+        searchTarget = pick.id;
+      }
+      const target = world.byId.get(searchTarget);
+      const legId = nextHop(state, target.id) ?? target.id;
+      if (legId === state.seekerId && target.id !== state.seekerId) {
+        fail(`${difficulty}/${seed}: no first leg towards ${target.name}`); break;
+      }
+      const res = travel(state, legId);
+      if (state.seekerId === searchTarget) searchTarget = null;
+      if (!res.ok && travelBlocker(state, legId)) {
+        // Blocked (u-turn, travel agent): obey the instruction instead. That
+        // is a plan too, not a move -- the forced station is rarely on a line
+        // out of wherever you happen to be standing, and travelling straight
+        // at it silently did nothing, which is how a run span out to the turn
+        // limit with three candidates left and no way to reach any of them.
+        const forced = state.effects.forcedReturn ?? state.effects.mustVisit;
+        if (forced == null) { fail(`${difficulty}/${seed}: travel blocked with no forced destination — ${res.reason}`); break; }
+        const leg = nextHop(state, forced) ?? forced;
+        const forcedRes = travel(state, leg);
+        if (!forcedRes.ok) { fail(`${difficulty}/${seed}: could not move towards forced ${world.byId.get(forced).name} — ${forcedRes.reason}`); break; }
+      }
+      continue;
+    }
+
+    // Otherwise ask whichever question splits the candidate set most evenly
+    // *per minute spent*. Cost has to be in here now that the categories are
+    // not all priced the same: on the worst case alone the bot buys tentacles
+    // every time, because it is the strongest single question -- and pays
+    // fifteen minutes for it, three times over, which is not what a player
+    // who can read the price tag would do. Ranking on the same worst case
+    // divided by what it costs turns the bot back into a reasonable model of
+    // one, and turns the reported score back into a number worth trusting.
+    const me = seeker(state);
+    let best = null;
+    for (const q of askable) {
+      if (q.cat === "thermometer" || q.visual) continue;
+      const buckets = new Map();
+      for (const s of state.candidates) {
+        const v = q.ask(s, { seeker: me }, world);
+        buckets.set(v, (buckets.get(v) || 0) + 1);
+      }
+      const worst = Math.max(...buckets.values());          // seekers plan for the bad case
+      const cost = RULES.askMinutes[q.cat] * (state.asked.get(q.id) ? 2 : 1);
+      const share = worst / state.candidates.length;
+      // Ground removed per minute, with a share of 1 (learned nothing) worth 0.
+      const value = share >= 1 ? 0 : -Math.log(share) / cost;
+      if (!best || value > best.value) best = { q, value };
+    }
+    const chosen = best ? best.q : askable[Math.floor(rng() * askable.length)];
+    const res = ask(state, chosen);
+    if (!res.ok) { fail(`${difficulty}/${seed}: ask refused — ${res.reason}`); break; }
+  }
+
+  if (state.status !== "found") fail(`${difficulty}/${seed}: run never finished (${turns} turns, ${state.candidates.length} left)`);
+  return { state, turns };
+}
+
+function checkInvariants(state, difficulty, seed) {
+  const h = state.hider;
+  if (state.candidates.length === 0 && state.status === "playing")
+    fail(`${difficulty}/${seed}: candidate set emptied while still playing`);
+  if (h.committed && state.status === "playing") {
+    const present = state.candidates.some((s) => s.id === h.committed.id) || state.checked.has(h.committed.id);
+    if (!present)
+      fail(`${difficulty}/${seed}: hider at ${h.committed.name} was eliminated by their own answers`);
+  }
+  // The seeker's view and the hider's view must agree.
+  const a = new Set(state.candidates.map((s) => s.id));
+  const b = new Set(h.candidates.map((s) => s.id));
+  if (h.committed === null) {
+    for (const id of b) if (!a.has(id)) fail(`${difficulty}/${seed}: hider believes ${id} is possible but the seeker has ruled it out`);
+  }
+}
+
+const seen = new Map();
+const tally = (k) => seen.set(k, (seen.get(k) || 0) + 1);
+
+// Where rounds begin and how much ground they open with. Both are per map, so
+// they are cleared between maps by the driver below.
+let starts = new Set();
+let openings = [];
+
+/** Count what actually happened, so a feature that never fires shows up as a
+ *  zero here rather than sitting in the source looking implemented. */
+function tallyRun(state) {
+  for (const e of state.log) {
+    if (e.who === "curse") tally("curse: " + e.text.split(" — ")[0]);
+    else if (e.veto) tally("powerup: Veto");
+    else if (e.move) tally("powerup: Move");
+    else if (/^Randomize\./.test(e.text)) tally("powerup: Randomize");
+    else if (/^The hider plays /.test(e.text)) tally("powerup: " + e.text.replace(/^The hider plays /, "").replace(/\.$/, ""));
+    else if (e.photo) tally("question: photo answered");
+  }
+  for (const id of state.asked.keys()) tally("category: " + state.questions.find((q) => q.id === id).cat);
+}
+
+const runs = [];
+for (const m of MAPS) {
+world = await loadWorld("../" + m.file);
+starts = new Set();
+openings = [];
+log(`\n== ${world.name}: ${world.stations.length} stations, ${world.edges.length} edges, ` +
+    `${world.lines.length} lines, ${world.questions ?? ""}` +
+    `${Object.values(world.pois).reduce((a, b) => a + b.length, 0)} POIs ==`);
+for (const difficulty of ["fair", "devious"]) {
+  const stats = [];
+  for (let seed = 1; seed <= 15; seed++) {
+    try {
+      const { state, turns } = playRun(difficulty, seed);
+      tallyRun(state);
+      const score = finalScore(state);
+      stats.push({ total: score.total, elapsed: score.elapsed, bonus: score.bonus, turns,
+                   asked: [...state.asked.values()].reduce((a, b) => a + b, 0),
+                   searched: state.checked.size });
+    } catch (err) {
+      fail(`${difficulty}/${seed}: threw — ${err && err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : err}`);
+    }
+  }
+  if (stats.length) {
+    const med = (k) => { const v = stats.map((s) => s[k]).sort((x, y) => x - y); return v[Math.floor(v.length / 2)]; };
+    log(`${difficulty}: ${stats.length} runs · median score ${Math.round(med("total"))} min ` +
+        `(clock ${Math.round(med("elapsed"))} + bonus ${med("bonus")}) · ${med("asked")} questions · ` +
+        `${med("searched")} stops searched`);
+    runs.push(...stats);
+  }
+}
+// A random start is only random if it moves: this used to be the network hub
+// every single round, and the failure mode was silent -- the game still
+// worked, it was just the same game.
+const med = (a) => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
+log(`opening position: ${starts.size} different starting stops over 30 rounds, ` +
+    `median ${med(openings)} stops in play out of ${world.stations.length}`);
+if (starts.size < 10) fail(`only ${starts.size} distinct starting stops in 30 rounds`);
+}
+
+log("\nwhat actually fired across all runs:");
+for (const [k, n] of [...seen].sort()) log(`  ${n.toString().padStart(4)}  ${k}`);
+const never = ["Veto", "Move", "Randomize", "Expand Hand"].filter((k) => !seen.has("powerup: " + k));
+if (never.length) log(`  never fired: ${never.join(", ")}`);
+
+log(failures ? `\n${failures} FAILURE(S)` : "\nall invariants held");
+document.title = failures ? `FAIL:${failures}` : "PASS";
+</script>
+</body>
+</html>

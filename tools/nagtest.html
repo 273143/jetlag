@@ -1,0 +1,94 @@
+<!doctype html>
+<meta charset="utf-8"><title>RUNNING</title>
+<style>body{background:#0d1014;color:#e8ecf1;font:13px/1.5 ui-monospace,monospace;margin:0}
+iframe{width:412px;height:915px;border:0;display:block}</style>
+<iframe id="f"></iframe>
+<div id="out"></div>
+<script type="module">
+// The offline nag: the sheet that goes in front of the Start button when the
+// map has never been saved for offline play.
+//
+// This test is in two halves because CacheStorage is not always there to be
+// tested against. The confined Chromium snap this repo is developed on has no
+// working Cache API at all -- caches.open() never settles, which is the exact
+// case js/offline.js wraps in withTimeout -- so on that machine the only
+// thing worth asserting is the fallback: unreadable storage must let the
+// round start, not hang and not nag on a guess. Where the Cache API does
+// work, the whole sheet is driven.
+//
+// Do not "fix" the skip by faking a status. The decision this checks is
+// whether main.js reads real storage correctly; a stub would assert only that
+// the stub was read.
+
+const out = document.getElementById("out");
+let bad = 0;
+const log = (m) => out.insertAdjacentHTML("beforeend", m + "<br>");
+const check = (c, m) => { if (!c) bad++; log((c ? "ok: " : "FAIL: ") + m); };
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (fn, ms = 12000) => {
+  const t = Date.now();
+  while (Date.now() - t < ms) { if (fn()) return true; await wait(60); }
+  return false;
+};
+
+/** Does this browser actually have a Cache API that answers? */
+async function storageWorks() {
+  if (!("caches" in window)) return false;
+  try {
+    await Promise.race([
+      caches.open("hs-nagtest-probe"),
+      new Promise((_, rej) => setTimeout(() => rej(new Error("stalled")), 4000)),
+    ]);
+    await caches.delete("hs-nagtest-probe");
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+const MAP = new URLSearchParams(location.search).get("map") || "brno";
+const f = document.getElementById("f");
+// No go=1: the nag hangs off the Start button, and pressing it is the point.
+f.src = `../index.html?map=${MAP}&seed=7`;
+
+f.addEventListener("load", async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  const $ = (id) => d.getElementById(id);
+  const live = await storageWorks();
+  log(live ? "(Cache API works here: driving the whole sheet)"
+           : "(no working Cache API here: checking the fallback only)");
+
+  check(await until(() => $("play") && !$("play").disabled), "the start screen came up");
+  check($("modal").hidden, "nothing in front of the button before it is pressed");
+
+  $("play").click();
+
+  if (!live) {
+    // Storage unreadable. The nag must stay out of the way entirely: no sheet,
+    // no stall, straight into the round exactly as before it existed.
+    check(await until(() => !$("app").hidden), "storage unreadable: Start still starts the round");
+    check($("modal").hidden, "storage unreadable: no sheet was guessed at");
+    check(await until(() => !!w.__debug), "the game booted");
+  } else {
+    check(await until(() => !$("modal").hidden), "Start put the offline nag up first");
+    const sheet = $("sheet");
+    check(/not saved for offline/.test(sheet.textContent), "the sheet says the map is not saved");
+    const mb = sheet.textContent.match(/(\d+)\s*MB/);
+    check(!!mb && Number(mb[1]) > 0, `the sheet quotes a real size (${mb ? mb[1] + " MB" : "none"})`);
+    check(!!$("start"), "the start screen is still behind it, so Save is reachable");
+    check($("app").hidden, "the round has not begun");
+
+    const buttons = [...sheet.querySelectorAll("button")];
+    check(buttons.length === 2, "two ways out: save, or play without it");
+    const anyway = buttons.find((b) => /without/i.test(b.textContent));
+    check(!!anyway, "one of them plays anyway");
+    anyway?.click();
+    check(await until(() => !$("app").hidden), "playing anyway starts the round");
+    check($("modal").hidden, "the sheet closed behind it");
+    check(await until(() => !!w.__debug), "the game booted");
+  }
+
+  document.title = bad ? "FAIL" : "PASS";
+  log(bad ? `\n${bad} FAILURE(S)` : "\noffline nag all good");
+});
+</script>

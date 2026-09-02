@@ -1,0 +1,446 @@
+:root {
+  --bg: #0d1014;
+  --panel: #151a21;
+  --panel-2: #1c222b;
+  --line: #2a323d;
+  --text: #e8ecf1;
+  --dim: #98a2b0;
+  --ink: #0d1014;
+
+  --candidate: #f5b93d;
+  --seeker: #4aa8ff;
+  --hider: #ff5165;
+  --rail: #7b8698;
+  --out: #4a5361;
+  --checked: #8d97a6;
+
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%;
+  background: var(--bg); color: var(--text);
+  font-family: var(--font); font-size: 15px; line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+#app { display: grid; grid-template-columns: 1fr 400px; height: 100%; }
+#map { height: 100%; background: var(--bg); }
+
+/* ---------------------------------------------------------------- panel */
+
+#panel {
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--panel); border-left: 1px solid var(--line);
+}
+
+#head { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+#head h1 { margin: 0; font-size: 21px; letter-spacing: -0.02em; font-weight: 700; }
+#head h1 span { color: var(--candidate); }
+#head .sub { color: var(--dim); font-size: 13px; margin-top: 2px; }
+
+#hud { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); }
+.stat { padding: 10px 14px; text-align: center; border-right: 1px solid var(--line); }
+.stat:last-child { border-right: 0; }
+.stat b { display: block; font-family: var(--mono); font-size: 21px; font-variant-numeric: tabular-nums; }
+.stat span { font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--dim); }
+
+#here {
+  padding: 10px 16px; border-bottom: 1px solid var(--line);
+  font-size: 15px; color: var(--dim);
+}
+#here b { color: var(--seeker); font-weight: 600; }
+
+#effects:not(:empty) { padding: 8px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 5px; }
+.effect {
+  font-size: 14px; color: #ffd9a0; background: #3a2a12;
+  border-left: 2px solid var(--candidate); padding: 5px 8px; border-radius: 0 4px 4px 0;
+}
+
+/* ------------------------------------------------------- the two panes */
+
+/* The questions and the answers share the panel instead of splitting it.
+   Stacked, at the size this text is actually read at -- arm's length, on a
+   phone, in daylight -- neither half showed more than about three lines, and
+   the answer list underneath was the half that lost. Each pane gets the whole
+   height instead, and asking a question pulls the answer's pane up itself
+   (see renderLog), so the common turn is still one click. */
+#pane { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+#pane button {
+  flex: 1; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+  padding: 9px 10px; border-radius: 8px;
+  background: var(--panel-2); color: var(--dim);
+  border: 1px solid var(--line);
+}
+#pane button[aria-selected="true"] { border-color: var(--candidate); color: var(--text); }
+#pane button i {
+  font-style: normal; font-family: var(--mono); font-weight: 400;
+  font-size: 13px; color: var(--dim);
+}
+#pane button i:not(:empty) { margin-left: 6px; }
+#pane button[aria-selected="true"] i { color: var(--candidate); }
+
+/* [hidden] is a UA rule and loses to an id selector, so it must be restated. */
+#askpane[hidden], #logwrap[hidden] { display: none; }
+#askpane { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+
+/* ------------------------------------------------------------ questions */
+
+#cats { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+#cats button {
+  flex: 1 0 auto; font: inherit; font-size: 14px; padding: 6px 11px; cursor: pointer;
+  background: var(--panel-2); color: var(--dim);
+  border: 1px solid var(--line); border-radius: 999px;
+}
+#cats button[aria-selected="true"] { background: var(--candidate); border-color: var(--candidate); color: #24190a; font-weight: 600; }
+#cats button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* align-content, because the pane gives this a definite height now: without
+   it a short list spreads its rows down the whole panel. */
+#questions {
+  padding: 8px 12px; display: grid; gap: 5px; align-content: start;
+  flex: 1; min-height: 0; overflow-y: auto;
+}
+.qblurb { font-size: 14px; color: var(--dim); padding: 2px 2px 6px; }
+.q {
+  display: flex; align-items: baseline; gap: 8px; text-align: left; width: 100%;
+  font: inherit; font-size: 17px; cursor: pointer; padding: 9px 12px;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px;
+}
+.q:hover:not(:disabled) { border-color: var(--candidate); }
+.q:disabled { opacity: 0.4; cursor: not-allowed; }
+.q .cost { margin-left: auto; font-family: var(--mono); font-size: 13px; color: var(--dim); white-space: nowrap; }
+.q .rep { color: var(--hider); font-size: 13px; }
+/* What the question would be comparing against, shown before it is paid for. */
+.q .ctx { display: block; font-style: normal; font-size: 13px; color: var(--dim); margin-top: 2px; }
+
+/* The full answer set for a question, so a named answer means something. */
+.qrow { display: grid; gap: 3px; }
+.opts > summary {
+  list-style: none; cursor: pointer; font-size: 13px; color: var(--dim);
+  padding: 2px 10px; width: fit-content; border-radius: 5px;
+}
+.opts > summary::-webkit-details-marker { display: none; }
+.opts > summary::before { content: "▸ "; color: var(--checked); }
+.opts[open] > summary::before { content: "▾ "; }
+.opts > summary:hover { color: var(--text); }
+.olist {
+  display: flex; flex-wrap: wrap; gap: 3px 5px;
+  padding: 4px 10px 6px; font-size: 13px;
+}
+.olist i { font-style: normal; color: var(--dim); }
+.olist i:not(:last-child)::after { content: " ·"; color: var(--out); }
+/* The seeker's own, so "the nearest is X" can be read against where you are. */
+.olist i.mine { color: var(--seeker); font-weight: 600; }
+
+/* Range rings and the scale bar: quiet, and never in the way of the dots. */
+.ringlabel {
+  font-family: var(--mono); font-size: 10px; color: var(--seeker);
+  opacity: .65; text-align: center; pointer-events: none; text-shadow: 0 0 3px var(--bg);
+}
+.leaflet-control-scale-line {
+  background: rgba(13, 16, 20, .7); border-color: var(--rail); color: var(--text);
+  font-family: var(--mono); font-size: 10px;
+}
+
+/* ------------------------------------------------- departures */
+
+.departures {
+  margin-top: 7px; font: inherit; font-size: 14px; cursor: pointer;
+  padding: 4px 11px; border-radius: 6px;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+}
+.departures:hover { border-color: var(--candidate); }
+
+.sheetnote { font-size: 12px; color: var(--dim); margin: 0 0 14px; }
+.svc { margin: 0 0 5px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.svc.worth { border-color: rgba(245, 185, 61, .35); }
+.svc > summary {
+  font-size: 13px; cursor: pointer; list-style: none; padding: 7px 10px;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text);
+}
+.svc > summary::-webkit-details-marker { display: none; }
+.svc > summary:hover { background: var(--panel-2); border-radius: 6px; }
+.svc > summary .tw { color: var(--dim); font-size: 12px; }
+.svc > summary i { color: var(--checked); font-style: normal; font-size: 11px; }
+.svc > summary b { margin-left: auto; font-size: 11px; color: var(--candidate); font-weight: 600; }
+.svc .mode {
+  font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .04em; padding: 2px 7px; border-radius: 4px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+}
+/* Mode is the one thing you read off a real board before anything else. */
+.svc .mode.tram { color: var(--hider); border-color: var(--hider); }
+.svc .mode.trolleybus { color: var(--candidate); border-color: var(--candidate); }
+.svc .mode.bus { color: var(--seeker); border-color: var(--seeker); }
+.svc .mode.walk { color: var(--checked); }
+.svc .next { font-family: var(--mono); font-size: 12px; color: var(--candidate); }
+
+.stoplist { display: grid; gap: 2px; padding: 0 6px 7px; }
+.stoprow {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: baseline;
+  font: inherit; font-size: 13px; text-align: left; cursor: pointer;
+  padding: 5px 9px; border-radius: 5px;
+  background: transparent; color: var(--dim); border: 1px solid transparent;
+}
+.stoprow:hover:not(:disabled) { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+.stoprow:disabled { opacity: .35; cursor: not-allowed; }
+/* A stop that could still hold the hider is the only reason to go anywhere. */
+.stoprow.alive .nm { color: var(--candidate); font-weight: 600; }
+.stoprow .dur, .stoprow .arr { font-family: var(--mono); font-size: 11px; }
+.stoprow .arr { color: var(--checked); }
+
+.ticket {
+  display: grid; gap: 4px; font-size: 13px; color: var(--dim);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 7px; padding: 12px 14px; margin-bottom: 14px;
+}
+.ticket .total { color: var(--candidate); font-weight: 600; margin-top: 4px; }
+.btn.go { border-color: var(--candidate); }
+
+/* ------------------------------------------------------------------ log */
+
+#logwrap { flex: 1; min-height: 0; overflow-y: auto; }
+#log { padding: 12px 16px; display: grid; gap: 11px; }
+.entry { font-size: 16px; }
+.entry .t { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-right: 6px; }
+.entry.seeker { color: var(--seeker); }
+.entry.seeker .ctx { color: var(--dim); font-size: 13px; display: block; margin-left: 2px; }
+.entry.hider { background: var(--panel-2); border-left: 2px solid var(--candidate); padding: 7px 10px; border-radius: 0 5px 5px 0; }
+.entry.hider .cut { display: block; margin-top: 3px; font-size: 13px; color: var(--candidate); }
+.entry.system { color: var(--dim); font-size: 14px; }
+.entry.system.found { color: var(--hider); font-weight: 600; font-size: 17px; }
+.entry.curse { background: #3a1620; border-left: 2px solid var(--hider); padding: 7px 10px; border-radius: 0 5px 5px 0; }
+.entry.curse b { color: var(--hider); display: block; }
+.entry.curse .fx { font-size: 14px; color: #ffc2ca; }
+.photo { width: 100%; aspect-ratio: 4 / 3; border-radius: 6px; margin-top: 6px; border: 1px solid var(--line); }
+
+/* --------------------------------------------------------------- modal */
+
+/* [hidden] is a UA rule and loses to an id selector, so it must be restated. */
+#modal[hidden], #app[hidden] { display: none; }
+
+#modal {
+  position: fixed; inset: 0; background: rgba(6, 8, 11, 0.78);
+  display: grid; place-items: center; padding: 20px; z-index: 1200;
+}
+.sheet {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 22px; max-width: 520px; width: 100%; max-height: 88vh; overflow-y: auto;
+}
+.sheet h2 { margin: 0 0 4px; font-size: 18px; }
+.sheet h2.curse { color: var(--hider); }
+.sheet p { color: var(--dim); font-size: 13px; margin: 0 0 14px; }
+.sheet .btn, #play, .travel {
+  font: inherit; font-weight: 600; cursor: pointer;
+  background: var(--candidate); color: #24190a;
+  border: 0; border-radius: 8px; padding: 9px 16px;
+}
+.sheet .btn.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); }
+.sheet .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.word { font-family: var(--mono); font-size: 30px; letter-spacing: 0.34em; margin: 6px 0 14px; }
+.keys { display: grid; grid-template-columns: repeat(9, 1fr); gap: 5px; }
+.keys button {
+  font: inherit; font-family: var(--mono); cursor: pointer; padding: 8px 0;
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 5px;
+}
+.keys button:disabled { opacity: 0.25; cursor: not-allowed; }
+.keys button.miss { background: #3a1620; border-color: var(--hider); }
+
+.maze { display: grid; gap: 0; margin: 10px auto 14px; width: max-content; }
+.maze div { width: 30px; height: 30px; box-sizing: border-box; }
+.maze .n { border-top: 2px solid var(--line); }
+.maze .e { border-right: 2px solid var(--line); }
+.maze .s { border-bottom: 2px solid var(--line); }
+.maze .w { border-left: 2px solid var(--line); }
+.maze .you { background: var(--seeker); border-radius: 50%; }
+.maze .goal { background: #2b3a2a; }
+.dice { font-size: 44px; font-family: var(--mono); margin: 8px 0 14px; }
+
+/* --------------------------------------------------------- start screen */
+
+#start { position: fixed; inset: 0; background: var(--bg); display: grid; place-items: center; padding: 20px; z-index: 1400; }
+.startcard { max-width: 460px; width: 100%; }
+.startcard h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -0.03em; }
+.startcard h1 span { color: var(--candidate); }
+.tag { color: var(--dim); font-size: 14px; margin: 0 0 22px; }
+.tag b { color: var(--text); }
+.field { display: block; margin-bottom: 16px; }
+.field > span { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.09em; color: var(--dim); margin-bottom: 6px; }
+.field small { text-transform: none; letter-spacing: 0; }
+.choices { display: grid; gap: 7px; }
+.choices button {
+  font: inherit; text-align: left; cursor: pointer; padding: 10px 12px;
+  background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+}
+.choices button[aria-pressed="true"] { border-color: var(--candidate); background: var(--panel-2); }
+.choices b { display: block; font-size: 14px; }
+.choices small { color: var(--dim); font-size: 12px; }
+/* Short options -- the hiding window -- sit side by side rather than stacked. */
+.row-choices { grid-auto-flow: column; grid-auto-columns: 1fr; }
+.row-choices button { text-align: center; }
+
+.names { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+#seed, .names input { width: 100%; font: inherit; font-family: var(--mono); padding: 9px 11px; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
+.names input { font-family: var(--font); }
+#namefield[hidden], #difffield[hidden] { display: none; }
+#play { width: 100%; padding: 12px; font-size: 15px; }
+.credit { color: var(--dim); font-size: 11px; margin-top: 16px; }
+
+/* --------------------------------------------- the hiding period, 2 player */
+
+/* The hider is not seeking, so the seeker's furniture -- questions, log,
+   clock -- is out of the way and the map gets the whole screen. */
+/* Both axes: on a phone the grid is rows, and leaving the map at 42vh with
+   the panel gone would hide the choice inside a third of the screen. */
+#app.hiding { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+#app.hiding #panel { display: none; }
+
+#hidebar[hidden], #handoff[hidden] { display: none; }
+
+#hidebar {
+  position: fixed; z-index: 1100; left: 50%; transform: translateX(-50%);
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  width: min(680px, calc(100% - 24px));
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  padding: 12px 14px; border-radius: 12px;
+  background: rgba(21, 26, 33, 0.96); border: 1px solid var(--line);
+  box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
+}
+.hb-text { flex: 1 1 260px; min-width: 0; }
+/* Direct child only: the sentence underneath highlights names and times with
+   <b> too, and those have to stay inline or every one starts a new line. */
+.hb-text > b { display: block; font-size: 15px; }
+.hb-text > span { display: block; font-size: 12px; color: var(--dim); margin-top: 2px; }
+.hb-text > span b { color: var(--candidate); font-weight: 600; }
+.hb-actions { display: flex; gap: 8px; margin-left: auto; }
+.hb-actions button {
+  font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap;
+  background: var(--candidate); color: #24190a;
+  border: 0; border-radius: 8px; padding: 10px 15px;
+}
+.hb-actions button.ghost { background: var(--panel-2); color: var(--text); border: 1px solid var(--line); font-weight: 400; }
+.hb-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* The bar sits where Leaflet puts the zoom buttons and the scale, so they
+   move up out from under it for as long as it is there. */
+#app.hiding .leaflet-bottom { bottom: 96px; }
+
+/* Opaque, and over everything: this is the screen the other player must not
+   see past. */
+#handoff {
+  position: fixed; inset: 0; z-index: 1500; background: var(--bg);
+  display: grid; place-items: center; padding: 24px;
+}
+.handcard { max-width: 420px; width: 100%; text-align: center; }
+.handcard .eyebrow {
+  font-size: 11px; text-transform: uppercase; letter-spacing: 0.11em;
+  color: var(--dim); margin-bottom: 8px;
+}
+.handcard h2 { margin: 0 0 10px; font-size: 27px; letter-spacing: -0.02em; }
+.handcard p { color: var(--dim); font-size: 14px; margin: 0 0 22px; }
+.handcard p b { color: var(--text); }
+.handcard button {
+  width: 100%; font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+  background: var(--candidate); color: #24190a;
+  border: 0; border-radius: 10px; padding: 13px;
+}
+
+/* Round-by-round standings on the result sheet. */
+.standings { display: grid; gap: 5px; margin: 4px 0 16px; }
+.standings .srow {
+  display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: baseline;
+  font-size: 13px; padding: 7px 11px; border-radius: 7px;
+  background: var(--panel-2); border: 1px solid var(--line); color: var(--dim);
+}
+.standings .srow.lead { border-color: var(--candidate); color: var(--text); }
+.standings .srow b { font-family: var(--mono); font-variant-numeric: tabular-nums; color: var(--candidate); }
+.standings .srow .who { color: var(--text); font-weight: 600; }
+.standings .note { font-size: 11px; color: var(--dim); padding: 0 2px; }
+
+/* ------------------------------------------------------------- leaflet */
+
+.leaflet-container { background: var(--bg); font-family: var(--font); }
+
+/* The basemap ships light, so it is inverted here to sit under a dark UI.
+   Only the tile layer is filtered -- markers and overlays must keep their
+   real colours, which is why this targets .basemap and not the map pane. */
+.leaflet-tile-pane .basemap {
+  filter: invert(1) hue-rotate(180deg) saturate(0.45) brightness(0.92) contrast(0.92);
+}
+.leaflet-tooltip { background: var(--panel); border: 1px solid var(--line); color: var(--text); box-shadow: none; font-size: 12px; }
+.leaflet-tooltip-top::before { border-top-color: var(--line); }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--text); border: 1px solid var(--line); }
+.leaflet-popup-content { margin: 12px 14px; font-size: 13px; }
+.leaflet-popup-content b { font-size: 14px; }
+.leaflet-popup-content .meta { color: var(--dim); font-size: 12px; margin: 3px 0 9px; }
+.leaflet-popup-content .travel { width: 100%; }
+.leaflet-popup-content .travel:disabled { opacity: 0.45; cursor: not-allowed; }
+.leaflet-control-attribution { background: rgba(13, 16, 20, 0.8) !important; color: var(--dim) !important; }
+.leaflet-control-attribution a { color: var(--dim) !important; }
+
+/* Line badges: the transit lines serving a stop. */
+.lines { display: inline-flex; flex-wrap: wrap; gap: 3px; vertical-align: middle; }
+.lines i {
+  font-style: normal; font-family: var(--mono); font-size: 10px; line-height: 1.6;
+  padding: 0 5px; border-radius: 3px; color: var(--ink); background: var(--rail);
+}
+#here .lines { margin-left: 4px; }
+.leaflet-popup-content .lines { margin: 4px 0 2px; }
+
+/* ------------------------------------------------------- offline control */
+
+#offline { margin-top: 14px; font-size: 12px; color: var(--dim); }
+#offstate { margin-bottom: 8px; }
+#offbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+#offbtns button {
+  font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 7px; padding: 7px 11px;
+}
+#offbtns button.ghost { margin-left: auto; color: var(--dim); }
+#offbtns button:disabled { opacity: 0.5; cursor: default; }
+#offbar { height: 4px; background: var(--panel-2); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+#offbar i { display: block; height: 100%; width: 0; background: var(--candidate); transition: width 0.2s; }
+
+/* ------------------------------------------------------------- on a phone */
+
+@media (max-width: 900px) {
+  /* The map keeps the top of the screen, the panel scrolls under it. Panes
+     get their own scroller on desktop; on a phone that nests two scrollers
+     inside each other, which is horrible to use, so the open pane is one
+     column of the panel's own scroll instead. */
+  #app { grid-template-columns: 1fr; grid-template-rows: 42vh 1fr; }
+  #panel { border-left: 0; border-top: 1px solid var(--line); }
+  #askpane { display: block; }
+  #questions { overflow: visible; }
+  #logwrap { overflow: visible; }
+  #panel { overflow-y: auto; }
+  /* The bar is two lines taller on a narrow screen, so the map controls have
+     further to climb to stay out from under it. */
+  #app.hiding .leaflet-bottom { bottom: 132px; }
+  .q, #cats button, #pane button, .keys button, .sheet .btn { min-height: 40px; }   /* thumbs */
+  .keys { grid-template-columns: repeat(7, 1fr); }
+  .maze div { width: 34px; height: 34px; }
+  .startcard { padding-bottom: 24px; }
+}
+
+@media (max-width: 560px) {
+  html, body { font-size: 14px; }
+  #hud .stat { padding: 8px 6px; }
+  .stat b { font-size: 16px; }
+  .maze div { width: 30px; height: 30px; }
+  .keys { grid-template-columns: repeat(6, 1fr); }
+}
+
+/* Respect the notch / rounded corners in standalone mode. */
+@supports (padding: env(safe-area-inset-bottom)) {
+  #panel { padding-bottom: env(safe-area-inset-bottom); }
+  #start { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+}

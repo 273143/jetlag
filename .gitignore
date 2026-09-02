@@ -1,0 +1,7 @@
+.cache/
+.shots/
+__pycache__/
+# Personal scratch: kept out because GitHub Pages would serve them as plain
+# text next to the game.
+notes
+notes2

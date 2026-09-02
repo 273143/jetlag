@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>2ptest</title>
+<style>body{margin:0;background:#0d1014;color:#e8ecf1;font:13px system-ui}
+iframe{width:1400px;height:900px;border:0;display:block}
+#out{padding:8px 12px;white-space:pre-wrap;font-family:monospace}</style>
+</head>
+<body>
+<div id="out">driving…</div>
+<iframe id="f"></iframe>
+<script>
+// Drives a whole pass-and-play match through the real screens: the handover,
+// the hiding phase, the run, the standings, and the handover into round two.
+//
+// The things worth asserting are the ones that make it a *match* rather than
+// two unrelated runs: that the hider ends up where the person put them, that
+// the seeker is told nothing they should not be, and that round two starts
+// where round one ended.
+const out = document.getElementById("out");
+const lines = [];
+const log = (s) => { lines.push(s); out.textContent = lines.join("\n"); console.log(s); };
+let bad = 0;
+const check = (cond, what) => { if (!cond) { bad++; log("FAIL: " + what); } else log("ok: " + what); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const waitFor = async (fn, tries = 80) => {
+  for (let i = 0; i < tries; i++) { if (fn()) return true; await sleep(100); }
+  return false;
+};
+
+/** Curses that open a minigame block everything until they are cleared. */
+async function clearChallenges(w, ui, state) {
+  let guard = 0;
+  const letters = "etaoinshrdlcumwfgypbvkjxqz";
+  while (state.challenge && guard++ < 400) {
+    const c = state.challenge;
+    if (c.type === "hangman") w.__debug.challengeStep(state, letters[guard % 26]);
+    else if (c.type === "tumble") w.__debug.challengeStep(state, null);
+    else if (c.type === "labyrinth") {
+      // Any legal step will do here; the point is only to get out.
+      const { w: mw, cells } = c.maze;
+      const dirs = [["N", 1], ["E", 2], ["S", 4], ["W", 8]].filter(([, bit]) => cells[c.at] & bit);
+      w.__debug.challengeStep(state, dirs[guard % dirs.length][0]);
+    } else break;
+  }
+  ui.refresh();
+  await sleep(20);
+}
+
+/** Play a round out to the find, through the real travel handler so the
+ *  match records the result the way a player's clicks would. */
+async function playToTheEnd(w, d) {
+  const { state, ui } = w.__debug;
+  for (let i = 0; i < 400 && state.status === "playing"; i++) {
+    if (state.challenge) { await clearChallenges(w, ui, state); continue; }
+    const forced = state.effects.forcedReturn ?? state.effects.mustVisit;
+    const goal = forced != null ? forced : (state.candidates[0] ?? state.world.stations[0]).id;
+    const next = w.__debug.nextHop(state, goal) ?? goal;
+    if (next === state.seekerId && goal !== state.seekerId) break;
+    ui.on.travel(state.world.byId.get(next));
+    await sleep(0);
+  }
+  return state;
+}
+
+const f = document.getElementById("f");
+const MAP = new URLSearchParams(location.search).get("map") || "brno";
+f.src = `../index.html?map=${MAP}&seed=11&players=2&go=1`;
+f.addEventListener("load", async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  const $ = (id) => d.getElementById(id);
+
+  await waitFor(() => w.__debug && !$("handoff").hidden);
+  check(!!w.__debug, "the match booted");
+  if (!w.__debug) return done();
+  w.onerror = (m) => { bad++; log("FAIL: uncaught in game — " + m); };
+
+  // ---- round one: the handover to the hider ----------------------------
+  check(w.__debug.phase === "hiding", "opened in the hiding phase, before any game state");
+  check(/Player 1 hides/.test($("hotitle").textContent),
+        `first handover asks for the hider (${$("hotitle").textContent})`);
+  const range = w.__debug.range, start = w.__debug.start;
+  check(range.stops.length >= 25,
+        `${range.stops.length} stops are reachable in the ${range.minutes}m head start`);
+  $("hobtn").click();
+  await sleep(120);
+
+  // ---- the hiding phase -------------------------------------------------
+  check(!$("hidebar").hidden, "the hiding bar opened");
+  check($("app").classList.contains("hiding"), "the seeker's panel is out of the way");
+  check($("hbgo").disabled, "cannot hide before choosing anywhere");
+
+  // Somewhere out of reach must be refused rather than silently ignored.
+  const far = state_far(w, range);
+  if (far) {
+    w.__debug.gmap.markers.get(far.id).fire("click");
+    await sleep(40);
+    check($("hbgo").disabled && /too far/.test($("hbtitle").textContent),
+          "a stop outside the head start is refused");
+  } else {
+    log("ok: the whole map is inside the window, nothing to refuse");
+  }
+
+  // The start itself is not a hiding place.
+  w.__debug.gmap.markers.get(start.id).fire("click");
+  await sleep(40);
+  check($("hbgo").disabled, "hiding at the starting stop is refused");
+
+  // Now hide somewhere real: the stop deepest into the head start, which is
+  // also the one a person is most likely to want.
+  const pick = range.stops.slice().sort(
+    (a, b) => range.reach.minutes[b.id] - range.reach.minutes[a.id])[0];
+  w.__debug.gmap.markers.get(pick.id).fire("click");
+  await sleep(40);
+  check(!$("hbgo").disabled, `chose ${pick.name}, ${Math.round(range.reach.minutes[pick.id])}m out`);
+  check($("hbgo").textContent.includes(pick.name), "the button names where you are hiding");
+  $("hbgo").click();
+  // Long enough for Leaflet's 200ms tooltip fade to finish removing the
+  // element, or the leak check below reads one that is already on its way out.
+  await sleep(400);
+
+  // ---- the handover back ------------------------------------------------
+  check(!$("handoff").hidden, "the hider is asked to hand the phone back");
+  check(/Player 2 seeks/.test($("hotitle").textContent),
+        `second handover asks for the seeker (${$("hotitle").textContent})`);
+  check(!$("hotext").textContent.includes(pick.name),
+        "the handover screen does not name the hiding place");
+  // Leaflet opens a tooltip on click, and on a touch screen nothing closes it
+  // again -- so the stop the hider tapped would still be labelled on the map
+  // the seeker is handed.
+  check([...d.querySelectorAll(".leaflet-tooltip")].every((t) => !t.textContent.includes(pick.name)),
+        "no tooltip left the hiding place labelled on the map");
+  check($("app").classList.contains("hiding") === false, "the seeker's panel is back");
+  $("hobtn").click();
+  await waitFor(() => w.__debug.phase === "seeking");
+
+  // ---- round one, played ------------------------------------------------
+  const state = w.__debug.state;
+  check(state.hider.committed.id === pick.id,
+        `the hider is where the player put them (${state.hider.committed.name})`);
+  check(state.candidates.some((c) => c.id === pick.id),
+        "the hiding place is in the seeker's candidate set");
+  check(state.seekerId === start.id, "the seeker starts where the round started");
+  check(/Round 1/.test($("mode").textContent), `the panel says whose round it is (${$("mode").textContent})`);
+  check(d.querySelectorAll("#log .entry").length > 0, "the run opened with a briefing");
+
+  await playToTheEnd(w, d);
+  check(state.status === "found", `round one ended at ${state.hider.committed.name}`);
+  await sleep(200);
+  const sheet = $("sheet").textContent;
+  check(!$("modal").hidden, "the result sheet opened");
+  check(/Player 2 found Player 1/.test(sheet), "the sheet says who found whom");
+  check(d.querySelectorAll("#sheet .standings .srow").length === 2, "standings list both players");
+  const nextBtn = [...d.querySelectorAll("#sheet .btn")].find((b) => /round 2/.test(b.textContent));
+  check(!!nextBtn, "the sheet offers the next round");
+
+  // ---- round two --------------------------------------------------------
+  const foundAt = state.hider.committed;
+  const round1Score = w.__debug.match.results[0];
+  check(round1Score && round1Score.hider === "Player 1" && round1Score.total > 0,
+        `round one scored ${Math.round(round1Score?.total ?? 0)}m for the hider`);
+  nextBtn.click();
+  await waitFor(() => w.__debug.phase === "hiding" && !$("handoff").hidden);
+  check(w.__debug.match.round === 2, "the match moved to round two");
+  check(w.__debug.start.id === foundAt.id,
+        `round two starts where round one ended (${w.__debug.start.name})`);
+  check(/Player 2 hides/.test($("hotitle").textContent), "the roles swapped");
+  check($("modal").hidden, "the result sheet closed behind the handover");
+
+  // And it is playable: hide, hand back, and check the log is round two's.
+  $("hobtn").click();
+  await sleep(120);
+  const pick2 = w.__debug.range.stops[0];
+  w.__debug.gmap.markers.get(pick2.id).fire("click");
+  await sleep(40);
+  $("hbgo").click();
+  await sleep(150);
+  $("hobtn").click();
+  await waitFor(() => w.__debug.phase === "seeking" && w.__debug.state.hiding.startId === foundAt.id);
+  const s2 = w.__debug.state;
+  check(s2.seekerId === foundAt.id, "round two's seeker starts at the old hiding place");
+  check(s2.hider.committed.id === pick2.id, "round two's hider is where player 2 put them");
+  check(s2.clock === 0, "round two starts on a fresh clock");
+  check(d.querySelectorAll("#log .entry").length < 4, "the panel log was cleared for the new round");
+  done();
+});
+
+/** A stop the hider could not reach in time, if this map has one. */
+function state_far(w, range) {
+  const inside = new Set(range.stops.map((s) => s.id));
+  return w.__debug.gmap.world.stations.find(
+    (s) => !inside.has(s.id) && s.id !== w.__debug.start.id);
+}
+
+function done() {
+  log(bad ? `\n${bad} FAILURE(S)` : "\ntwo-player match all good");
+  document.title = bad ? `FAIL:${bad}` : "PASS";
+}
+</script>
+</body>
+</html>

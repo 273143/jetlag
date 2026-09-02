@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>uitest</title>
+<style>body{margin:0;background:#0d1014;color:#e8ecf1;font:13px system-ui}
+iframe{width:1400px;height:820px;border:0;display:block}
+#out{padding:8px 12px;white-space:pre-wrap;font-family:monospace}</style>
+</head>
+<body>
+<div id="out">driving…</div>
+<iframe id="f"></iframe>
+<script>
+// Drives the real UI through a whole run by clicking real buttons, so the
+// rendering paths (question list, photo embeds, travel popup, result sheet)
+// are exercised rather than just the engine underneath them.
+const out = document.getElementById("out");
+const lines = [];
+const log = (s) => { lines.push(s); out.textContent = lines.join("\n"); console.log(s); };
+let bad = 0;
+const check = (cond, what) => { if (!cond) { bad++; log("FAIL: " + what); } else log("ok: " + what); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Shortest-path step out of a maze, so clearing a Labyrinth is quick. */
+function mazeStep(maze, at) {
+  const { w, h, cells } = maze, goal = w * h - 1;
+  const DIRS = [{ k: "N", bit: 1, d: -w }, { k: "E", bit: 2, d: 1 }, { k: "S", bit: 4, d: w }, { k: "W", bit: 8, d: -1 }];
+  const prev = new Map([[at, null]]), queue = [at];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (cur === goal) break;
+    for (const dir of DIRS) {
+      if (!(cells[cur] & dir.bit)) continue;
+      const nxt = cur + dir.d;
+      if (nxt < 0 || nxt >= w * h || prev.has(nxt)) continue;
+      prev.set(nxt, { from: cur, k: dir.k }); queue.push(nxt);
+    }
+  }
+  let node = goal;
+  while (prev.get(node) && prev.get(node).from !== at) node = prev.get(node).from;
+  return prev.get(node) ? prev.get(node).k : "N";
+}
+
+/** Curses that open a minigame block everything until they are cleared. */
+async function clearChallenges(w, ui, state) {
+  let guard = 0, letters = "etaoinshrdlcumwfgypbvkjxqz";
+  while (state.challenge && guard++ < 300) {
+    const c = state.challenge;
+    if (c.type === "hangman") w.__debug.challengeStep(state, letters[guard % 26]);
+    else if (c.type === "tumble") w.__debug.challengeStep(state, null);
+    else if (c.type === "labyrinth") w.__debug.challengeStep(state, mazeStep(c.maze, c.at));
+    else break;
+  }
+  ui.refresh();
+  await sleep(20);
+  return guard;
+}
+
+const f = document.getElementById("f");
+// tools/uitest.sh runs this once per map.
+const MAP = new URLSearchParams(location.search).get("map") || "south-moravia";
+f.src = `../index.html?map=${MAP}&seed=7&hider=fair&go=1`;
+f.addEventListener("load", async () => {
+  const w = f.contentWindow, d = f.contentDocument;
+  for (let i = 0; i < 60 && !w.__debug; i++) await sleep(200);
+  check(!!w.__debug, "game booted inside the iframe");
+  if (!w.__debug) return done();
+  const { state, ui } = w.__debug;
+
+  w.onerror = (m) => { bad++; log("FAIL: uncaught in game — " + m); };
+
+  const startCands = state.candidates.length;
+  check(state.world.id === MAP, `loaded the ${MAP} map`);
+  // The opening position is the hiding window, not the whole map: the hider
+  // had a head start and could not have got further than it allowed. So the
+  // set has to be big enough to be a search and small enough to be a
+  // constraint, and every stop in it has to be genuinely reachable.
+  check(startCands >= 25 && startCands < state.world.stations.length,
+        `started with ${startCands} of ${state.world.stations.length} stops in play`);
+  const window = state.hiding.minutes;
+  const over = state.candidates.filter((c) => state.hiding.reach.minutes[c.id] > window);
+  check(over.length === 0,
+        `every candidate is inside the ${window}m head start` +
+        (over.length ? ` (${over.length} are not)` : ""));
+  check(state.hider.committed == null ||
+        state.hiding.reach.minutes[state.hider.committed.id] <= window,
+        "the hider hid somewhere they could actually reach");
+
+  // Ask one question from every category, through the real buttons.
+  for (const cat of ["radar", "matching", "measuring", "tentacles", "photo"]) {
+    await clearChallenges(w, ui, state);
+    const tab = [...d.querySelectorAll("#cats button")].find((b) => b.dataset.cat === cat);
+    tab.click(); await sleep(30);
+    const q = [...d.querySelectorAll("#questions .q")].find((b) => !b.disabled);
+    if (!q) {
+      bad++;
+      log(`FAIL: every ${cat} question was disabled — ` +
+          [...d.querySelectorAll("#questions .q")].map((b) => b.title).join(" / "));
+      continue;
+    }
+    const before = state.candidates.length, clock = state.clock;
+    q.click(); await sleep(60);
+    check(state.clock > clock, `${cat}: asking advanced the clock (${Math.round(state.clock - clock)}m)`);
+    check(state.candidates.length <= before, `${cat}: candidates did not grow`);
+    check(state.candidates.some((s) => s.id === state.hider.committed.id),
+          `${cat}: the hider is still in the candidate set`);
+  }
+
+  // The photo must have produced a real embedded imagery pane.
+  await sleep(1200);
+  const photos = d.querySelectorAll("#log .photo.leaflet-container .leaflet-tile-loaded");
+  check(photos.length > 0, `photo rendered real aerial tiles (${photos.length} loaded)`);
+
+  // The departure board, where a timetabled map does its travelling.
+  await clearChallenges(w, ui, state);
+  const depBtn = d.querySelector("#here .departures");
+  if (depBtn) {
+    depBtn.click(); await sleep(80);
+    const svcs = d.querySelectorAll("#sheet .svc");
+    const rows = d.querySelectorAll("#sheet .stoprow");
+    check(svcs.length > 0, `departure board listed ${svcs.length} service(s)`);
+    check(rows.length > 0, `board offered ${rows.length} reachable stop(s)`);
+    const times = [...d.querySelectorAll("#sheet .svc .next")].map((n) => n.textContent);
+    check(times.some((t) => /\d\d?:\d\d/.test(t)), "board showed real departure times");
+    const row = [...rows].find((r) => !r.disabled);
+    if (row) {
+      row.click(); await sleep(80);                       // -> confirm screen
+      check(!!d.querySelector("#sheet .ticket"), "choosing a stop asked to confirm");
+      const clockBefore = state.clock, whereBefore = state.seekerId;
+      d.querySelector("#sheet .btn.go").click(); await sleep(120);
+      check(state.clock > clockBefore, `confirming rode the vehicle (${Math.round(state.clock - clockBefore)}m)`);
+      check(state.seekerId !== whereBefore || state.status === "found", "the ride moved the seeker");
+    }
+    ui.closeModal();
+  } else {
+    log("ok: no timetable on this map, board not offered");
+  }
+
+  // Travel via the real map popup.
+  await clearChallenges(w, ui, state);
+  const target = state.candidates.find((s) => s.id !== state.seekerId);
+  w.__debug.gmap.markers.get(target.id).fire("click"); await sleep(120);
+  const btn = d.querySelector(".leaflet-popup-content .travel");
+  check(!!btn, "station popup offered a travel button");
+  const before = state.clock, whereWas = state.seekerId;
+  if (btn && !btn.disabled) { btn.click(); await sleep(120); }
+  check(state.clock > before, `travelling advanced the clock (${Math.round(state.clock - before)}m)`);
+  // On a timetabled map the popup offers the first leg of the journey rather
+  // than the whole thing, so arriving at the target in one click is only one
+  // of the right answers.
+  check(state.seekerId !== whereWas || state.status === "found", "seeker actually moved");
+
+  // Run it out to the end, obeying whatever the hider throws at us.
+  for (let i = 0; i < 400 && state.status === "playing"; i++) {
+    if (state.challenge) { await clearChallenges(w, ui, state); continue; }
+    const forced = state.effects.forcedReturn ?? state.effects.mustVisit;
+    const goal = forced != null ? forced
+      : (state.candidates[0] ?? state.world.stations[0]).id;
+    // One line at a time, so head for the goal a leg at a time.
+    const next = w.__debug.nextHop(state, goal) ?? goal;
+    if (next === state.seekerId && goal !== state.seekerId) break;
+    w.__debug.travel(state, next);
+    ui.refresh();
+  }
+  check(state.status === "found",
+        `run finished, hider found at ${state.hider.committed?.name}` +
+        (state.status !== "found" ? ` (stuck: challenge=${state.challenge?.type}, left=${state.candidates.length})` : ""));
+  await sleep(200);
+  check(!d.getElementById("modal").hidden, "the result sheet opened");
+  const sheet = d.getElementById("sheet").textContent;
+  check(/hider's score/.test(sheet), "result sheet shows a score");
+  done();
+});
+
+function done() {
+  log(bad ? `\n${bad} FAILURE(S)` : "\nUI paths all good");
+  document.title = bad ? `FAIL:${bad}` : "PASS";
+}
+</script>
+</body>
+</html>

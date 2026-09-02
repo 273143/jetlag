@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hide + Seek — South Moravia &amp; Brno</title>
+<meta name="theme-color" content="#0d1014">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<!-- Leaflet is vendored rather than pulled from a CDN: the whole point is
+     that this still works on a train with no signal. -->
+<link rel="stylesheet" href="vendor/leaflet.css">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="app" hidden>
+  <main id="map"></main>
+
+  <aside id="panel">
+    <header id="head">
+      <h1>Hide <span>+</span> Seek</h1>
+      <div class="sub" id="mode"></div>
+    </header>
+
+    <div id="hud">
+      <div class="stat"><b id="clock">0m</b><span>elapsed</span></div>
+      <div class="stat"><b id="candcount">—</b><span>possible</span></div>
+      <div class="stat"><b id="handcount">0</b><span>hider cards</span></div>
+    </div>
+
+    <div id="here"></div>
+    <div id="effects"></div>
+
+    <!-- Questions and answers take turns in the one panel: filled by
+         ui.js, like every other nav here. -->
+    <nav id="pane"></nav>
+
+    <div id="askpane">
+      <nav id="cats"></nav>
+      <div id="questions"></div>
+    </div>
+
+    <div id="logwrap"><div id="log"></div></div>
+  </aside>
+</div>
+
+<!-- The hider's bar during the hiding period, over a full-width map. -->
+<div id="hidebar" hidden>
+  <div class="hb-text">
+    <b id="hbtitle"></b>
+    <span id="hbtext"></span>
+  </div>
+  <div class="hb-actions">
+    <button id="hbrandom" class="ghost">Surprise me</button>
+    <button id="hbgo" disabled>Hide here</button>
+  </div>
+</div>
+
+<!-- Passing the phone. Covers everything: whatever is on screen when the
+     device changes hands has been given away. -->
+<div id="handoff" hidden>
+  <div class="handcard">
+    <div class="eyebrow" id="hoeyebrow"></div>
+    <h2 id="hotitle"></h2>
+    <p id="hotext"></p>
+    <button id="hobtn"></button>
+  </div>
+</div>
+
+<div id="modal" hidden><div class="sheet" id="sheet"></div></div>
+
+<div id="start">
+  <div class="startcard">
+    <h1>Hide <span>+</span> Seek</h1>
+    <p class="tag">You both start at the same random stop. The hider gets a
+      head start to travel and go to ground; then you ask questions, work the
+      map and close the net. Your score is the clock when you find them
+      &mdash; lower is better.</p>
+
+    <label class="field">
+      <span>Map</span>
+      <div class="choices" id="mapchoices"></div>
+    </label>
+
+    <label class="field">
+      <span>Players</span>
+      <div class="choices" id="modechoices"></div>
+    </label>
+
+    <label class="field" id="namefield" hidden>
+      <span>Who is playing</span>
+      <div class="names">
+        <input id="p1" type="text" maxlength="16" autocomplete="off" placeholder="Player 1">
+        <input id="p2" type="text" maxlength="16" autocomplete="off" placeholder="Player 2">
+      </div>
+    </label>
+
+    <label class="field" id="difffield">
+      <span>Hider</span>
+      <div class="choices" id="diffchoices"></div>
+    </label>
+
+    <label class="field">
+      <span>Hiding period <small>(the hider's head start)</small></span>
+      <div class="choices row-choices" id="hidechoices"></div>
+    </label>
+
+    <label class="field">
+      <span>Seed <small>(same seed, same round)</small></span>
+      <input id="seed" type="text" inputmode="numeric">
+    </label>
+
+    <button id="play" disabled>Start the run</button>
+
+    <div id="offline">
+      <div id="offstate">Checking offline storage…</div>
+      <div id="offbtns" hidden>
+        <button id="offmap" disabled>Map</button>
+        <button id="offphotos" disabled>Map + photos</button>
+        <button id="offclear" class="ghost">Clear</button>
+      </div>
+      <div id="offbar" hidden><i></i></div>
+    </div>
+
+    <p class="credit" id="credit"></p>
+  </div>
+</div>
+
+<script src="vendor/leaflet.js"></script>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>
