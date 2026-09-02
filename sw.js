@@ -10,11 +10,12 @@
 //          Never purged on activate -- a user on a train has paid for those
 //          megabytes once and should not lose them to a code update.
 
-// Bump on any change to the files below. v8: js/wakelock.js. v7: the panel's
+// Bump on any change to the files below. v9: the start screen scrolls on a
+// phone. v8: js/wakelock.js. v7: the panel's
 // Ask / Answers panes. v6: added js/match.js and
 // js/hidephase.js for the two-player pass-and-play. v5 added js/timetable.js,
 // and app files are served network-first (see the fetch handler).
-const SHELL = "hs-shell-v8";
+const SHELL = "hs-shell-v9";
 const TILES = "hs-tiles-v1";
 
 const SHELL_FILES = [

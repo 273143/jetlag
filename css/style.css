@@ -265,8 +265,24 @@ html, body {
 
 /* --------------------------------------------------------- start screen */
 
-#start { position: fixed; inset: 0; background: var(--bg); display: grid; place-items: center; padding: 20px; z-index: 1400; }
-.startcard { max-width: 460px; width: 100%; }
+/* Centred, fixed, and taller than the screen -- which on a phone meant the
+   bottom of the card simply did not exist. The card runs to about 1100px with
+   both maps described and the offline block at the foot of it; a phone gives
+   you 900 at best, so "Start the run" was below the fold with no way to reach
+   it.
+
+   Adding overflow-y alone does not fix a grid with place-items:center: when
+   the child is taller than the box, centring overflows it off the top edge as
+   well as the bottom, and the top of a scroll container is not reachable. Flex
+   with margin:auto on the child centres identically while there is room, and
+   collapses to the start edge when there is not -- the one version of this
+   that stays scrollable. Same shape for #handoff below. */
+#start {
+  position: fixed; inset: 0; background: var(--bg);
+  display: flex; overflow-y: auto;
+  padding: 20px; z-index: 1400;
+}
+.startcard { max-width: 460px; width: 100%; margin: auto; }
 .startcard h1 { font-size: 34px; margin: 0 0 6px; letter-spacing: -0.03em; }
 .startcard h1 span { color: var(--candidate); }
 .tag { color: var(--dim); font-size: 14px; margin: 0 0 22px; }
@@ -336,9 +352,9 @@ html, body {
    see past. */
 #handoff {
   position: fixed; inset: 0; z-index: 1500; background: var(--bg);
-  display: grid; place-items: center; padding: 24px;
+  display: flex; overflow-y: auto; padding: 24px;
 }
-.handcard { max-width: 420px; width: 100%; text-align: center; }
+.handcard { max-width: 420px; width: 100%; margin: auto; text-align: center; }
 .handcard .eyebrow {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.11em;
   color: var(--dim); margin-bottom: 8px;

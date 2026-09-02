@@ -27,4 +27,7 @@ done
 # The offline nag in front of the Start button. Skips its own assertions where
 # the browser has no working Cache API -- see the note in the page.
 run "offline nag" "tools/nagtest.html?map=brno"
+# Phone-sized viewports. Everything above runs in a 1400x1200 window, where the
+# start card fits and a bug that strands its button below the fold is invisible.
+run "phone layout" "tools/phonetest.html"
 [ $fail -eq 0 ] && echo "RESULT: PASS" || { echo "RESULT: FAIL"; exit 1; }

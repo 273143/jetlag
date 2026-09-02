@@ -323,7 +323,7 @@ best-effort -- unsupported or refused changes nothing about the game.
 | --- | --- |
 | `./run.sh` | serve on :8080 |
 | `./tools/test.sh` | 60 automated runs, invariants, and what actually fired |
-| `./tools/uitest.sh` | drives the real UI: a full run and a full two-player match per map, then the offline nag |
+| `./tools/uitest.sh` | drives the real UI: a full run and a full two-player match per map, then the offline nag and the phone-sized layout |
 | `./tools/shot.sh 'index.html?go=1' out.png` | headless screenshot, for looking at the UI without a display |
 | `python3 tools/build_map.py all` | rebuild `data/*.json` from OpenStreetMap |
 | `python3 tools/survey_pois.py brno` | score candidate POI categories as questions |
@@ -332,7 +332,8 @@ best-effort -- unsupported or refused changes nothing about the game.
 Test pages: `tools/selftest.html` (engine), `tools/uitest.html` (one run),
 `tools/2ptest.html` (a whole match), `tools/nagtest.html` (the offline sheet in
 front of Start — it detects whether the browser has a working Cache API and
-asserts the fallback instead where it does not) — the shell scripts above are thin wrappers
+asserts the fallback instead where it does not), `tools/phonetest.html` (the
+full-screen overlays at 412x915 and 360x640) — the shell scripts above are thin wrappers
 that serve the directory and point headless Chromium at them, sharing
 `tools/lib.sh` (`serve`, `browse`, `report`). The Python side shares
 `tools/osmlib.py` (OSM fetching, geometry, POI categories) and
@@ -405,6 +406,7 @@ game.ask(state, q)                 game.travel(state, id)
 | change the panel, sheets or wording | `js/ui.js` |
 | change the round or match flow | `js/main.js`, `js/match.js`, `js/hidephase.js` |
 | change offline nagging or the screen lock | `tilesAreMissing` in `js/main.js`, `js/wakelock.js` |
+| change a full-screen overlay (`#start`, `#handoff`) | `css/style.css` — keep it `display:flex` + `overflow-y:auto` with `margin:auto` on the card, or it stops scrolling on a phone |
 | **add a new `js/*.js` file** | also add it to `SHELL_FILES` in `sw.js` **and bump `SHELL`** |
 | add a new map | `MAPS` in `js/data.js`, `RULES.maps`, `MAPS` in `tools/build_map.py`, `PACKS` in `js/offline.js`, `SHELL_FILES` in `sw.js` |
 
