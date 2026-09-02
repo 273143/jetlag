@@ -442,6 +442,33 @@ The game is a PWA, so Android installs it straight from the browser: open it in
 Chrome, then **Add to Home screen**. It runs full-screen with no address bar,
 and the layout stacks the map above the panel on a narrow screen.
 
+Chrome only offers that for a page served over HTTPS, which `./run.sh` on
+localhost is not, so the phone needs the files somewhere with a certificate.
+Any static host will do and none of them need a build step -- there is nothing
+to build. GitHub Pages from the repo root is the least ceremony:
+
+```
+git remote add origin git@github.com:<you>/<repo>.git
+git push -u origin main
+# then: Settings -> Pages -> Deploy from a branch -> main / (root)
+```
+
+Every path in the app is relative -- the manifest's `start_url` and `scope`,
+the service worker registration, the vendored Leaflet -- so it works unchanged
+under a project subpath like `https://<you>.github.io/<repo>/`, which is what
+Pages gives a project repo. That is checked rather than assumed: a run, a
+two-player match and the offline nag have all been driven against the site
+served one directory down, and the manifest, service worker and icons all
+resolve from there.
+
+Two things exist only for playing away from a desk. `js/wakelock.js` holds a
+screen wake lock for the length of a round, because a round is twenty minutes
+of looking at a map without touching it and, in a match, a phone that locks
+itself mid-handover hands the next player whatever the last one was reading.
+And the start screen now puts a sheet in front of the Start button when the map
+has never been saved offline -- once per session, and never when you are
+already offline and there is nothing to be done about it.
+
 Offline is the point, since the natural place to play this is a train or a pub.
 A service worker precaches the app and both map files, about 700 KB, so the
 whole deduction game works with no signal after one visit. Map tiles are the
@@ -464,13 +491,16 @@ thousand tiles per zoom level and rising.
 Leaflet is vendored into `vendor/` rather than loaded from a CDN, for the same
 reason.
 
-**Caveat:** the offline download could not be exercised in this environment —
-headless Chromium never resolves `caches.open()`, in either headless mode — so
-the tile arithmetic and the URLs are verified (every sampled URL returns a real
-image) but the caching path itself has only been reasoned about, not run. It
-wants one check on a real phone. Everything that touches Cache Storage is
-wrapped in a timeout, so a browser that blocks it degrades to a clear message
-rather than a spinner that never stops.
+**Caveat:** the bulk download itself still has not been run end to end here.
+Cache Storage in headless Chromium turned out to be unreliable rather than
+absent — `caches.open()` stalls on a cold profile and answers on a warm one, so
+`tools/nagtest.html` reads storage for real and passes, while a full tile pack
+has never actually been fetched in this environment. The tile arithmetic and
+the URLs are verified (every sampled URL returns a real image); the megabytes
+have only been reasoned about. It wants one check on a real phone. Everything
+that touches Cache Storage is wrapped in a timeout, so a browser that blocks it
+degrades to a clear message rather than a spinner that never stops — and the
+offline nag treats unreadable storage as "say nothing", never as "not saved".
 
 ## Layout
 
@@ -490,6 +520,7 @@ js/match.js           pass-and-play bookkeeping: whose turn, where next, scores
 js/hidephase.js       the handover screen and the hiding period
 js/map.js  js/ui.js   Leaflet map and the panel
 js/offline.js         offline tile packs
+js/wakelock.js        keeps the screen on for the length of a round
 sw.js                 service worker: precache, tile cache
 vendor/               Leaflet, vendored so offline really means offline
 data/*.json           the baked maps
@@ -498,8 +529,8 @@ tools/osmlib.py       shared OSM fetching and geometry
 tools/tune_tentacles.py   measures how strong each Tentacles radius is
 tools/survey_pois.py      scores candidate POI categories as questions
 tools/test.sh         engine self-test, across every map
-tools/uitest.sh       drives the real interface: a whole run, and a whole
-                      two-player match, on each map
+tools/uitest.sh       drives the real interface: a whole run, a whole
+                      two-player match on each map, and the offline nag
 ```
 
 The trick that keeps the game honest is in `js/questions.js`: each question is
