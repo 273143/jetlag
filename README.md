@@ -453,6 +453,10 @@ git push -u origin main
 # then: Settings -> Pages -> Deploy from a branch -> main / (root)
 ```
 
+This one lives at **https://273143.github.io/jetlag/**, deployed that way from
+`main`; a push is a release. Note that Pages on a free account needs the repo
+to be *public* — a private one silently offers you nothing but the paid option.
+
 Every path in the app is relative -- the manifest's `start_url` and `scope`,
 the service worker registration, the vendored Leaflet -- so it works unchanged
 under a project subpath like `https://<you>.github.io/<repo>/`, which is what
@@ -491,16 +495,19 @@ thousand tiles per zoom level and rising.
 Leaflet is vendored into `vendor/` rather than loaded from a CDN, for the same
 reason.
 
-**Caveat:** the bulk download itself still has not been run end to end here.
-Cache Storage in headless Chromium turned out to be unreliable rather than
-absent — `caches.open()` stalls on a cold profile and answers on a warm one, so
-`tools/nagtest.html` reads storage for real and passes, while a full tile pack
-has never actually been fetched in this environment. The tile arithmetic and
-the URLs are verified (every sampled URL returns a real image); the megabytes
-have only been reasoned about. It wants one check on a real phone. Everything
-that touches Cache Storage is wrapped in a timeout, so a browser that blocks it
-degrades to a clear message rather than a spinner that never stops — and the
-offline nag treats unreadable storage as "say nothing", never as "not saved".
+This was the last part of the game to go untested, and it is no longer: the
+app was installed from the address above on an Android phone on 2026-09-02 and
+a map pack downloaded and stored. Before that it had shipped on arithmetic
+alone, because Cache Storage in headless Chromium is unreliable rather than
+absent — `caches.open()` stalls on a cold profile and answers on a warm one.
+That is worth remembering before trusting a green test here: `tools/nagtest.html`
+does read storage for real, and detects and skips where it cannot, but no
+harness in this repo has ever fetched a whole pack. The download wants a phone.
+
+Everything that touches Cache Storage is wrapped in a timeout, so a browser
+that blocks it degrades to a clear message rather than a spinner that never
+stops — and the offline nag treats unreadable storage as "say nothing", never
+as "not saved".
 
 ## Layout
 
