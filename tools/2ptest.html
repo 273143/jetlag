@@ -8,7 +8,7 @@ iframe{width:1400px;height:900px;border:0;display:block}
 <body>
 <div id="out">driving…</div>
 <iframe id="f"></iframe>
-<script>
+<script type="module">
 // Drives a whole pass-and-play match through the real screens: the handover,
 // the hiding phase, the run, the standings, and the handover into round two.
 //
@@ -16,6 +16,18 @@ iframe{width:1400px;height:900px;border:0;display:block}
 // two unrelated runs: that the hider ends up where the person put them, that
 // the seeker is told nothing they should not be, and that round two starts
 // where round one ended.
+//
+// The screens are read through the dictionary, not through English literals:
+// what the handover says depends on the language, and the assertion has to
+// depend on it the same way or it only ever tests one of the two.
+import { t, setLang } from "../js/i18n.js";
+
+const params = new URLSearchParams(location.search);
+const LANG = params.get("lang") || "cs";
+setLang(LANG);
+// No names are typed in, so both players are whatever the language calls them.
+const P1 = t("start.p1"), P2 = t("start.p2");
+
 const out = document.getElementById("out");
 const lines = [];
 const log = (s) => { lines.push(s); out.textContent = lines.join("\n"); console.log(s); };
@@ -54,17 +66,16 @@ async function playToTheEnd(w, d) {
     if (state.challenge) { await clearChallenges(w, ui, state); continue; }
     const forced = state.effects.forcedReturn ?? state.effects.mustVisit;
     const goal = forced != null ? forced : (state.candidates[0] ?? state.world.stations[0]).id;
-    const next = w.__debug.nextHop(state, goal) ?? goal;
-    if (next === state.seekerId && goal !== state.seekerId) break;
-    ui.on.travel(state.world.byId.get(next));
+    if (goal === state.seekerId) break;
+    ui.on.travel(state.world.byId.get(goal));
     await sleep(0);
   }
   return state;
 }
 
 const f = document.getElementById("f");
-const MAP = new URLSearchParams(location.search).get("map") || "brno";
-f.src = `../index.html?map=${MAP}&seed=11&players=2&go=1`;
+const MAP = params.get("map") || "brno";
+f.src = `../index.html?map=${MAP}&seed=11&players=2&lang=${LANG}&go=1`;
 f.addEventListener("load", async () => {
   const w = f.contentWindow, d = f.contentDocument;
   const $ = (id) => d.getElementById(id);
@@ -76,7 +87,7 @@ f.addEventListener("load", async () => {
 
   // ---- round one: the handover to the hider ----------------------------
   check(w.__debug.phase === "hiding", "opened in the hiding phase, before any game state");
-  check(/Player 1 hides/.test($("hotitle").textContent),
+  check($("hotitle").textContent === t("ho.hides", { name: P1 }),
         `first handover asks for the hider (${$("hotitle").textContent})`);
   const range = w.__debug.range, start = w.__debug.start;
   check(range.stops.length >= 25,
@@ -94,7 +105,8 @@ f.addEventListener("load", async () => {
   if (far) {
     w.__debug.gmap.markers.get(far.id).fire("click");
     await sleep(40);
-    check($("hbgo").disabled && /too far/.test($("hbtitle").textContent),
+    check($("hbgo").disabled &&
+          $("hbtitle").textContent === t("hb.tooFarTitle", { name: far.name }),
           "a stop outside the head start is refused");
   } else {
     log("ok: the whole map is inside the window, nothing to refuse");
@@ -120,14 +132,14 @@ f.addEventListener("load", async () => {
 
   // ---- the handover back ------------------------------------------------
   check(!$("handoff").hidden, "the hider is asked to hand the phone back");
-  check(/Player 2 seeks/.test($("hotitle").textContent),
+  check($("hotitle").textContent === t("ho.seeks", { name: P2 }),
         `second handover asks for the seeker (${$("hotitle").textContent})`);
   check(!$("hotext").textContent.includes(pick.name),
         "the handover screen does not name the hiding place");
   // Leaflet opens a tooltip on click, and on a touch screen nothing closes it
   // again -- so the stop the hider tapped would still be labelled on the map
   // the seeker is handed.
-  check([...d.querySelectorAll(".leaflet-tooltip")].every((t) => !t.textContent.includes(pick.name)),
+  check([...d.querySelectorAll(".leaflet-tooltip")].every((el) => !el.textContent.includes(pick.name)),
         "no tooltip left the hiding place labelled on the map");
   check($("app").classList.contains("hiding") === false, "the seeker's panel is back");
   $("hobtn").click();
@@ -140,7 +152,8 @@ f.addEventListener("load", async () => {
   check(state.candidates.some((c) => c.id === pick.id),
         "the hiding place is in the seeker's candidate set");
   check(state.seekerId === start.id, "the seeker starts where the round started");
-  check(/Round 1/.test($("mode").textContent), `the panel says whose round it is (${$("mode").textContent})`);
+  check($("mode").textContent.includes(P1) && $("mode").textContent.includes(P2),
+        `the panel says whose round it is (${$("mode").textContent})`);
   check(d.querySelectorAll("#log .entry").length > 0, "the run opened with a briefing");
 
   await playToTheEnd(w, d);
@@ -148,22 +161,25 @@ f.addEventListener("load", async () => {
   await sleep(200);
   const sheet = $("sheet").textContent;
   check(!$("modal").hidden, "the result sheet opened");
-  check(/Player 2 found Player 1/.test(sheet), "the sheet says who found whom");
+  check(sheet.includes(t("res.matchTitle",
+          { seeker: P2, hider: P1, name: state.hider.committed.name })),
+        "the sheet says who found whom");
   check(d.querySelectorAll("#sheet .standings .srow").length === 2, "standings list both players");
-  const nextBtn = [...d.querySelectorAll("#sheet .btn")].find((b) => /round 2/.test(b.textContent));
+  const nextBtn = [...d.querySelectorAll("#sheet .btn")]
+    .find((b) => b.textContent === t("res.next", { name: P2, n: 2 }));
   check(!!nextBtn, "the sheet offers the next round");
 
   // ---- round two --------------------------------------------------------
   const foundAt = state.hider.committed;
   const round1Score = w.__debug.match.results[0];
-  check(round1Score && round1Score.hider === "Player 1" && round1Score.total > 0,
+  check(round1Score && round1Score.hider === P1 && round1Score.total > 0,
         `round one scored ${Math.round(round1Score?.total ?? 0)}m for the hider`);
   nextBtn.click();
   await waitFor(() => w.__debug.phase === "hiding" && !$("handoff").hidden);
   check(w.__debug.match.round === 2, "the match moved to round two");
   check(w.__debug.start.id === foundAt.id,
         `round two starts where round one ended (${w.__debug.start.name})`);
-  check(/Player 2 hides/.test($("hotitle").textContent), "the roles swapped");
+  check($("hotitle").textContent === t("ho.hides", { name: P2 }), "the roles swapped");
   check($("modal").hidden, "the result sheet closed behind the handover");
 
   // And it is playable: hide, hand back, and check the log is round two's.

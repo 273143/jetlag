@@ -21,9 +21,24 @@ serve() {
   return 1
 }
 
+# Whichever name Chromium goes by here. The Ubuntu snap calls itself
+# chromium-browser and Arch and the Chrome packages do not, so hardcoding one
+# means the tests silently do not run on the other -- and a test suite that
+# does not run looks exactly like a test suite that passes nothing.
+CHROME=${CHROME:-}
+if [ -z "$CHROME" ]; then
+  for c in chromium-browser chromium google-chrome-stable google-chrome; do
+    command -v "$c" >/dev/null 2>&1 && { CHROME=$c; break; }
+  done
+fi
+if [ -z "$CHROME" ]; then
+  echo "no chromium found -- install one, or set CHROME=/path/to/it" >&2
+  exit 1
+fi
+
 browse() {   # browse <url-path> [extra chromium args...]
   local path="$1"; shift
-  chromium-browser --headless --no-sandbox --disable-gpu \
+  "$CHROME" --headless --no-sandbox --disable-gpu \
     --user-data-dir="$PROFILE" --disk-cache-size=1 --hide-scrollbars \
     "$@" "http://127.0.0.1:$PORT/$path" 2>&1
 }

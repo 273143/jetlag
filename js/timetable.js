@@ -6,10 +6,18 @@
 // never waited for anything, and a city map with ninety-one lines let you
 // cross ten of them in twelve minutes.
 //
-// Here a move is one ride on one line. You may go to any stop that line
-// serves after yours, you wait for a real departure, and a change of line is
-// a second move made from the interchange -- which is what makes interchanges
-// worth anything.
+// Here the cost of getting somewhere is a real journey: you wait for a real
+// departure, you stay on to a stop that line actually serves, and a change of
+// line costs another wait rather than a flat fee -- which is what makes an
+// interchange worth anything.
+//
+// The seeker still picks a destination and goes there in one click; what
+// changed is only who does the connecting. The engine searches this timetable
+// for the fastest itinerary and charges all of it, waiting included, and every
+// screen that offers a journey shows the legs and the wait/ride split -- see
+// `journeyLegs` at the foot of this file. Making the player ride to an
+// interchange and board again by hand taught the same lesson, but it taught it
+// once and then charged tuition for the rest of the run.
 //
 // The timetable itself is the simplest thing that can be read off a board:
 // every line runs on a fixed headway from its terminus, so a stop N minutes
@@ -231,4 +239,37 @@ export function timetableTimes(world, from, clock) {
     },
     lineTo: (target) => legsTo(target).map((l) => (l.walk ? "on foot" : world.lines[l.line])),
   };
+}
+
+/**
+ * One journey, leg by leg, as a passenger would read it off a board.
+ *
+ * `timetableTimes` already searches over rides rather than over single hops,
+ * so its `legs(id)` is the itinerary: board here, stay on to there, board
+ * again. What this adds is the passenger's arithmetic -- how long each wait
+ * on a platform actually is, given when the previous vehicle put you down --
+ * and the totals that go with it.
+ *
+ * The split matters because it is the one thing the old one-ride-at-a-time
+ * interface made visible for free. Clicking a distant stop used to be refused
+ * with "ride to an interchange first", which taught you, three minutes at a
+ * time, that a change is not free. Letting the click through is much less
+ * tiring; it must not also quietly hide what the change cost, so every screen
+ * that offers a journey shows `wait` next to `onboard`.
+ */
+export function journeyLegs(world, travel, toId, clock) {
+  let now = clock;
+  return (travel.legs?.(toId) ?? []).map((l) => {
+    const leg = {
+      fromId: l.from, toId: l.to,
+      walk: !!l.walk,
+      ref: l.walk ? null : world.lines[l.line],
+      mode: l.walk ? "walk" : (world.lineModes?.[l.line] ?? "bus"),
+      depart: l.depart, arrive: l.arrive,
+      wait: Math.max(0, l.depart - now),
+      onboard: l.arrive - l.depart,
+    };
+    now = l.arrive;
+    return leg;
+  });
 }

@@ -12,6 +12,7 @@
 
 import { formatDuration } from "./geo.js";
 import { esc } from "./ui.js";
+import { t } from "./i18n.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -85,13 +86,12 @@ export function hidePhase({ gmap, world, start, range, name, rng = Math.random }
 
   function describe() {
     if (!chosen) {
-      $("hbtitle").textContent = `${name}, choose where to hide`;
-      $("hbtext").innerHTML =
-        `You are at <b>${esc(start.name)}</b> with <b>${formatDuration(range.minutes)}</b> ` +
-        `of head start. Tap any lit stop — ${pool.length} are close enough to reach in time. ` +
-        `The brighter it is, the more of your head start it spends.`;
+      $("hbtitle").textContent = t("hb.choose", { name });
+      $("hbtext").innerHTML = t("hb.chooseText", {
+        start: esc(start.name), window: formatDuration(range.minutes), n: pool.length,
+      });
       $("hbgo").disabled = true;
-      $("hbgo").textContent = "Hide here";
+      $("hbgo").textContent = t("hb.go");
       return;
     }
     const used = range.reach.minutes[chosen.id];
@@ -100,14 +100,14 @@ export function hidePhase({ gmap, world, start, range, name, rng = Math.random }
     $("hbtitle").textContent = chosen.name;
     // The journey first: how much of the head start this costs is the whole
     // decision, and where it is is a footnote to it.
-    $("hbtext").innerHTML =
-      `<b>${formatDuration(used)}</b> from ${esc(start.name)} — ` +
-      `${spare >= 1
-        ? `${formatDuration(spare)} of your head start left over`
-        : "the whole head start spent"}` +
-      (where.length ? ` · ${where.map(esc).join(" · ")}` : "");
+    $("hbtext").innerHTML = t("hb.chosenText", {
+      used: formatDuration(used),
+      start: esc(start.name),
+      left: spare >= 1 ? t("hb.left", { time: formatDuration(spare) }) : t("hb.allSpent"),
+      where: where.length ? ` · ${where.map(esc).join(" · ")}` : "",
+    });
     $("hbgo").disabled = false;
-    $("hbgo").textContent = `Hide at ${chosen.name}`;
+    $("hbgo").textContent = t("hb.goAt", { name: chosen.name });
   }
 
   // Clicking a stop that is out of reach is worth answering rather than
@@ -116,15 +116,16 @@ export function hidePhase({ gmap, world, start, range, name, rng = Math.random }
   const previousClick = gmap.onStationClick;
   gmap.onStationClick = (station) => {
     if (station.id === start.id) {
-      $("hbtitle").textContent = "That is where you both started";
-      $("hbtext").textContent = "Hiding here would be found in one move. Go somewhere.";
+      $("hbtitle").textContent = t("hb.startTitle");
+      $("hbtext").textContent = t("hb.startText");
       return;
     }
     if (range.reach.minutes[station.id] > range.minutes) {
-      $("hbtitle").textContent = `${station.name} is too far`;
-      $("hbtext").innerHTML =
-        `${formatDuration(range.reach.minutes[station.id])} away, and you only have ` +
-        `<b>${formatDuration(range.minutes)}</b>. Pick something lit.`;
+      $("hbtitle").textContent = t("hb.tooFarTitle", { name: station.name });
+      $("hbtext").innerHTML = t("hb.tooFarText", {
+        time: formatDuration(range.reach.minutes[station.id]),
+        window: formatDuration(range.minutes),
+      });
       $("hbgo").disabled = true;
       return;
     }

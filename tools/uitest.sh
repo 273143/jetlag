@@ -19,6 +19,12 @@ run() {   # run <label> <page>
 for MAP in south-moravia brno; do
   run "$MAP" "tools/uitest.html?map=$MAP"
 done
+# The pure-deduction game: same run, no deck. Brno, because that is where the
+# curses and the card counter are most visible.
+run "no cards / brno" "tools/uitest.html?map=brno&cards=0"
+# And once in English, so the other half of js/i18n.js is exercised in the
+# real UI rather than only by the key check.
+run "english / brno" "tools/uitest.html?map=brno&lang=en"
 # The pass-and-play match: two people, one device, and a round that has to
 # start where the last one finished.
 for MAP in south-moravia brno; do

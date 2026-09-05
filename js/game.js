@@ -7,8 +7,9 @@ import { Hider } from "./hider.js";
 import { CURSES, curseCost } from "./curses.js";
 import { mulberry32 } from "./deck.js";
 import { travelTimes } from "./data.js";
-import { hasTimetable, boardAt, rideCost, timetableTimes } from "./timetable.js";
+import { hasTimetable, boardAt, timetableTimes, journeyLegs } from "./timetable.js";
 import { haversine, formatKm, formatDuration, formatClock } from "./geo.js";
+import { t } from "./i18n.js";
 
 /**
  * Where a round begins.
@@ -72,10 +73,11 @@ export function hidingRange(world, startId, wanted = null) {
  * @param {number} [opts.startId]        where the round begins; random if absent
  * @param {number} [opts.hidingMinutes]  the head start, in minutes
  * @param {number} [opts.hiderStationId] a human hider's chosen stop
+ * @param {boolean} [opts.cards]         whether the hider deck is in play
  */
 export function newGame(world, {
   difficulty = "fair", seed = Date.now(), startId = null,
-  hidingMinutes = null, hiderStationId = null,
+  hidingMinutes = null, hiderStationId = null, cards = true,
 } = {}) {
   const rng = mulberry32(seed ^ 0x9e3779b9);
   const start = startId != null ? world.byId.get(startId) : randomStart(world, seed);
@@ -87,6 +89,12 @@ export function newGame(world, {
     difficulty,
     seed,
     rng,
+    // The pure-deduction game. Nothing about the questions, the candidate set
+    // or the travel model changes with it -- what goes away is the hider's
+    // deck, and with it the draws, the veto, the time bonuses and the curses.
+    // Every card path below is guarded by this one flag rather than by an
+    // empty hand, so a run with cards off is obviously card-free from here.
+    cards,
     seekerId: start.id,
     startId: start.id,
     hiding,
@@ -103,31 +111,63 @@ export function newGame(world, {
     log: [],
     status: "playing",
     transfer,
-    travel: null,
     // The radar distances this map offers, so the map can draw them as rings
     // around the seeker: the question is a circle, and it should look like one.
     rangeRings: (RULES.maps[world.id] ?? {}).radarKm ?? [],
   };
-  state.travel = reachFrom(state);
+  defineTravel(state);
   state.hider = new Hider(world, difficulty, seed, {
     pool: hiding.stops, reach: hiding.reach, window: hiding.minutes,
-    stationId: hiderStationId,
+    stationId: hiderStationId, cards,
   });
   state.hider.eliminate(start);
   state.candidates = state.candidates.filter((s) => s.id !== start.id);
 
-  say(state, "system",
-    `You and the hider both set out from ${start.name} at ${formatClock(RULES.startClock)}. ` +
-    `They had ${formatDuration(hiding.minutes)} to travel and hide` +
-    (hiding.widened
-      ? ` — ${formatDuration(hiding.asked)} was asked for, but so little is reachable from here ` +
-        `that the window was opened up until ${RULES.hiding.minStops} stops were in play`
-      : "") +
-    `. That puts them at one of ${state.candidates.length} stops. The clock is yours now.`);
+  say(state, "system", t("log.open", {
+    name: start.name,
+    clock: formatClock(RULES.startClock),
+    window: formatDuration(hiding.minutes),
+    widened: hiding.widened
+      ? t("log.openWidened", {
+          asked: formatDuration(hiding.asked), min: RULES.hiding.minStops,
+        })
+      : "",
+    n: state.candidates.length,
+  }));
   return state;
 }
 
 export const seeker = (state) => state.world.byId.get(state.seekerId);
+
+/**
+ * `state.travel` -- what you can reach, from where you stand, at the time it
+ * is now.
+ *
+ * It has to be a view rather than a field. Every departure in it is relative
+ * to the clock, and the clock moves for asking a question and for losing a
+ * hangman guess as well as for travelling; it used to be refreshed after a
+ * journey and nowhere else. That was invisible while it was only the estimate
+ * on the map -- a couple of minutes optimistic after an ask, and the real
+ * price came from re-reading the board. It stopped being invisible the moment
+ * a click on a distant stop started charging what this says, because then the
+ * seeker was quoted, and charged, for trams that had already gone.
+ *
+ * Recomputed on demand rather than inside `charge`: a search over Brno costs
+ * about 16 ms, and a labyrinth moves the clock a dozen times over while
+ * nobody is looking at the map at all.
+ */
+function defineTravel(state) {
+  let cached = null;
+  let at = null;
+  Object.defineProperty(state, "travel", {
+    enumerable: true,
+    get() {
+      const key = `${state.clock}:${state.seekerId}`;
+      if (at !== key) { at = key; cached = reachFrom(state); }
+      return cached;
+    },
+  });
+}
 
 /** Journey times to everywhere, from where the seeker stands, at the time it
  *  is now. On a timetabled map this is the board searched to exhaustion, so
@@ -147,34 +187,47 @@ export function board(state) {
 }
 
 /**
- * The first leg of the journey to `toId`: where one ride from here gets you.
+ * The whole journey from where the seeker stands to `toId`, or null if there
+ * is no route at all.
  *
- * With travel restricted to one line at a time, "go to that station" is a
- * plan rather than a move. This turns the plan into the move in front of you,
- * so the map can still be used to point at somewhere far away.
+ * This is what a click on a distant stop now buys. Travel used to be one ride
+ * on one line, and anywhere off that line was refused with an estimate and an
+ * instruction to ride to an interchange first -- which is honest about what a
+ * change costs and exhausting to play, because the seeker ends up hand-routing
+ * a network they cannot see the timetable for. The engine does the connecting
+ * instead, over exactly the same timetable and at exactly the same price: the
+ * search was always time-dependent, so the number charged here is the number
+ * a player doing it by hand would have paid.
+ *
+ * What must not be lost is the arithmetic behind the number, so the return
+ * value keeps the legs, the changes and the wait/ride split apart -- every
+ * screen that offers a journey shows them before it is paid for.
+ *
+ *   { minutes, onboard, wait, changes, stops, lines, legs, timetabled }
  */
-export function nextHop(state, toId) {
-  if (!hasTimetable(state.world)) return toId;
-  if (toId === state.seekerId) return toId;
-  if (directRide(state, toId)) return toId;
-  const legs = state.travel.legs?.(toId) ?? [];
-  return legs.length ? legs[0].to : null;
-}
-
-/** The cheapest way to reach `toId` in a single ride from where you stand,
- *  or null if no service from this stop goes there. */
-export function directRide(state, toId) {
-  const b = board(state);
-  if (!b) return null;
-  let best = null;
-  for (const entry of b) {
-    for (const stop of entry.stops) {
-      if (stop.id !== toId) continue;
-      const cost = rideCost(state.world, entry, stop, state.clock);
-      if (!best || cost.minutes < best.cost.minutes) best = { entry, stop, cost };
-    }
+export function journey(state, toId) {
+  const minutes = state.travel.minutes[toId];
+  if (!isFinite(minutes)) return null;
+  const lines = state.travel.lineTo(toId);
+  if (!hasTimetable(state.world)) {
+    // No timetable on this map, so nothing waits and there is nothing to
+    // split: the region's trains do not run on a headway, and inventing a
+    // platform wait for them would be a lie dressed as precision.
+    const path = state.travel.pathTo(toId);
+    return { minutes, onboard: minutes, wait: 0, timetabled: false,
+             changes: Math.max(0, lines.length - 1),
+             stops: Math.max(0, path.length - 1), lines, legs: [] };
   }
-  return best;
+  const legs = journeyLegs(state.world, state.travel, toId, state.clock);
+  const sum = (f) => legs.reduce((a, l) => a + f(l), 0);
+  return {
+    minutes, timetabled: true,
+    onboard: sum((l) => l.onboard),
+    wait: sum((l) => l.wait),
+    changes: Math.max(0, legs.length - 1),
+    stops: legs.length,
+    lines, legs,
+  };
 }
 export const questionById = (state, id) => state.questions.find((q) => q.id === id);
 
@@ -186,19 +239,19 @@ function say(state, who, text, extra = {}) {
 
 /** Why a question cannot be asked right now, or null if it can. */
 export function askBlocker(state, q) {
-  if (state.status !== "playing") return "The run is over.";
-  if (state.challenge) return "Clear the curse in front of you first.";
-  if (state.pendingThermo) return "Finish your thermometer first: travel far enough to read it.";
-  if (state.bannedQuestions.has(q.id)) return "The Drained Brain wiped this question from your mind.";
+  if (state.status !== "playing") return t("block.over");
+  if (state.challenge) return t("block.challenge");
+  if (state.pendingThermo) return t("block.thermo");
+  if (state.bannedQuestions.has(q.id)) return t("block.banned");
   const blocked = state.effects.blockedCategory;
   if (blocked && blocked.cat === q.cat && blocked.questions > 0)
-    return `Spotty Memory: no ${q.cat} questions for another ${blocked.questions} question(s).`;
+    return t("block.blockedCat", { cat: t(`cat.${q.cat}.name`), n: blocked.questions });
   if (state.effects.mustVisit != null)
-    return `The travel agent booked you into ${state.world.byId.get(state.effects.mustVisit).name}. Go there first.`;
+    return t("block.mustVisit", { name: state.world.byId.get(state.effects.mustVisit).name });
   if (state.effects.forcedReturn != null)
-    return `The U-Turn sends you back to ${state.world.byId.get(state.effects.forcedReturn).name} first.`;
+    return t("block.forcedReturn", { name: state.world.byId.get(state.effects.forcedReturn).name });
   if (state.effects.noRepeatAsk && state.effects.lastAskedAt === state.seekerId)
-    return "The Urban Explorer will not let you ask twice from the same station. Move on.";
+    return t("block.noRepeatAsk");
   return null;
 }
 
@@ -214,7 +267,7 @@ export function ask(state, q) {
     state.pendingThermo = { qid: q.id, fromId: state.seekerId, km: q.travelKm };
     bumpAsked(state, q);
     say(state, "seeker", q.text);
-    say(state, "hider", `Understood. Tell me when you have gone ${q.travelKm} km from ${me.name}.`);
+    say(state, "hider", t("log.thermoAck", { km: q.travelKm, name: me.name }));
     tickEffects(state, q);
     return { ok: true, pending: true };
   }
@@ -224,21 +277,21 @@ export function ask(state, q) {
   bumpAsked(state, q);
   say(state, "seeker", q.text, { context: q.context?.(ctx) });
 
-  if (state.hider.wantsRandomize(q, ctx)) {
+  if (state.cards && state.hider.wantsRandomize(q, ctx)) {
     state.hider.play(state.hider.find("randomize"));
     const pool = state.questions.filter((x) =>
       x.cat === q.cat && x.id !== q.id && !state.asked.has(x.id) && !state.bannedQuestions.has(x.id));
     if (pool.length) {
       const swap = pool[Math.floor(state.rng() * pool.length)];
-      say(state, "hider", `Randomize. You do not get that one — answer this instead: "${swap.text}"`);
+      say(state, "hider", t("log.randomize", { text: swap.text }), { card: "randomize" });
       bumpAsked(state, swap);
       q = swap;
     }
   }
 
-  if (state.hider.wantsVeto(q, ctx)) {
+  if (state.cards && state.hider.wantsVeto(q, ctx)) {
     state.hider.play(state.hider.hand.find((c) => c.kind === "powerup" && c.id === "veto"));
-    say(state, "hider", "Veto. You get no answer to that one.", { veto: true });
+    say(state, "hider", t("log.veto"), { veto: true, card: "veto" });
     tickEffects(state, q);
     return { ok: true, veto: true };
   }
@@ -269,13 +322,17 @@ export function repeatMultiplier(state, q) {
 }
 
 function hiderDraws(state, q) {
+  if (!state.cards) return;
   const { draw, keep } = RULES.draw[q.cat];
   const mult = repeatMultiplier(state, q);
   const bonus = state.effects.chalice > 0 ? 1 : 0;
   if (bonus) state.effects.chalice--;
   const ctx = { desperate: state.candidates.length < 12 };
   const kept = state.hider.drawAndKeep(draw * mult + bonus, keep * mult, ctx);
-  if (kept.length) say(state, "system", `The hider draws ${draw * mult + bonus} and keeps ${kept.length}.`, { quiet: true });
+  if (kept.length) {
+    say(state, "system",
+        t("log.draws", { draw: draw * mult + bonus, keep: kept.length }), { quiet: true });
+  }
 }
 
 function tickEffects(state, q) {
@@ -287,38 +344,27 @@ function tickEffects(state, q) {
 // -------------------------------------------------------------- travelling
 
 export function travelBlocker(state, toId) {
-  if (state.status !== "playing") return "The run is over.";
-  if (state.challenge) return "Clear the curse in front of you first.";
+  if (state.status !== "playing") return t("block.over");
+  if (state.challenge) return t("block.challenge");
   // Normally you cannot travel to where you already stand -- but the hider's
   // Move powerup reopens the neighbours of every surviving candidate, and the
   // platform you are standing on can be one of them. Refusing then would
   // deadlock the run: an amber dot under your feet that nothing can search.
   // Staying put to search is allowed, and costs the search time alone.
   if (toId === state.seekerId && !state.candidates.some((s) => s.id === toId))
-    return "You are already here, and you have searched it.";
-  // The U-Turn sends you back somewhere. Before travel was restricted to one
-  // line at a time that meant "go there, now", and refusing everything else
-  // was fine. It is not fine now: the station you are being sent back to is
-  // usually not on a line out of wherever you are standing, so demanding it
-  // in one move is demanding something impossible, and the run deadlocks with
-  // the curse permanently unsatisfiable. What it means now is "you may only
-  // travel towards it" -- the next leg of the way back, or the place itself.
-  if (state.effects.forcedReturn != null && toId !== state.effects.forcedReturn) {
-    const back = nextHop(state, state.effects.forcedReturn);
-    if (toId !== back)
-      return `The U-Turn sends you back to ${state.world.byId.get(state.effects.forcedReturn).name} first.`;
-  }
-  if (!isFinite(state.travel.minutes[toId])) return "There is no route to that station.";
-  // On a timetabled map a move is one ride on one line. Anywhere else is
-  // still reachable, but by boarding again at an interchange -- which is the
-  // point: a change of line should cost a decision and a wait, not a flat fee
-  // buried in a shortest path.
-  // Staying put to search is not a ride, so it is not the board's business.
-  if (toId !== state.seekerId && hasTimetable(state.world) && !directRide(state, toId)) {
-    const est = state.travel.minutes[toId];
-    return `No service from ${seeker(state).name} goes there. ` +
-           `About ${formatDuration(est)} with a change — ride to an interchange first.`;
-  }
+    return t("block.alreadyHere");
+  // The U-Turn sends you back somewhere, and now that any stop is one click
+  // away that is simply where you have to go next -- the station you came
+  // from is by construction reachable from the one you are standing on.
+  //
+  // It used to have to accept the next leg towards it as well, because travel
+  // was one ride on one line and the stop you had just left was usually not on
+  // any line out of where you now stood: demanding it in one move demanded
+  // something impossible and deadlocked the run with the curse permanently
+  // unsatisfiable. That whole clause goes away with the restriction.
+  if (state.effects.forcedReturn != null && toId !== state.effects.forcedReturn)
+    return t("block.forcedReturn", { name: state.world.byId.get(state.effects.forcedReturn).name });
+  if (!isFinite(state.travel.minutes[toId])) return t("block.noRoute");
   return null;
 }
 
@@ -328,15 +374,12 @@ export function travel(state, toId) {
 
   const dest = state.world.byId.get(toId);
   const staying = toId === state.seekerId;
-  const direct = staying ? null : directRide(state, toId);
-  const path = state.travel.pathTo(toId);
-  const lines = direct ? [direct.entry.ref] : state.travel.lineTo(toId);
-  let minutes = direct ? direct.cost.minutes : state.travel.minutes[toId];
-  const stops = direct ? direct.stop.at - direct.entry.at : path.length - 1;
+  const plan = staying ? null : journey(state, toId);
+  let minutes = staying ? 0 : plan.minutes;
 
   const notes = [];
-  if (state.effects.slowLegs > 0) { minutes *= 1.5; state.effects.slowLegs--; notes.push("The Gambler's Feet slow you down."); }
-  if (state.effects.longWay > 0)  { minutes *= 1.4; state.effects.longWay--;  notes.push("The Right Turn sends you round the houses."); }
+  if (state.effects.slowLegs > 0) { minutes *= 1.5; state.effects.slowLegs--; notes.push(t("log.slowed")); }
+  if (state.effects.longWay > 0)  { minutes *= 1.4; state.effects.longWay--;  notes.push(t("log.longWay")); }
 
   charge(state, minutes);
   state.previousStation = state.seekerId;
@@ -345,22 +388,17 @@ export function travel(state, toId) {
   if (state.effects.forcedReturn === toId) delete state.effects.forcedReturn;
   if (state.effects.mustVisit === toId) {
     delete state.effects.mustVisit;
-    notes.push("Holiday over. You may ask questions again.");
+    notes.push(t("log.holidayOver"));
   }
 
-  // The clock has moved, so where everything is has moved with it.
-  state.travel = reachFrom(state);
-
-  const via = direct
-    ? ` — ${direct.entry.walk ? "on foot" : `${direct.entry.mode} ${direct.entry.ref}`}, ` +
-      `${Math.abs(stops)} stop(s), ${formatDuration(direct.cost.onboard)} on board` +
-      (direct.cost.wait > 0 ? ` after ${formatDuration(direct.cost.wait)} waiting` : ", straight on")
-    : ` — ${path.length - 1} stop(s), ${formatDuration(minutes)}` +
-      (lines.length ? ` via ${lines.join(" → ")}` : "");
+  // What the journey was, before what it cost. On a timetabled map that is
+  // the changes and the lines; on one without, where nothing waits, it is the
+  // number of stops -- see `journey`.
   say(state, "system",
       staying
-        ? `You stay at ${dest.name} and search it — the hider's Move put this platform back in play.`
-        : `You travel to ${dest.name}${via}.` + (notes.length ? " " + notes.join(" ") : ""));
+        ? t("log.stay", { name: dest.name })
+        : describeJourney(dest, plan, minutes) +
+          (notes.length ? " " + notes.join(" ") : ""));
 
   // A jammed door greets you on arrival.
   if (state.effects.jammedDoors > 0) {
@@ -368,9 +406,9 @@ export function travel(state, toId) {
     const roll = 1 + Math.floor(state.rng() * 6) + 1 + Math.floor(state.rng() * 6);
     if (roll < 7) {
       charge(state, 10);
-      say(state, "system", `The Jammed Door: you roll ${roll}. Ten minutes lost shouldering it open.`);
+      say(state, "system", t("log.jammedFail", { roll }));
     } else {
-      say(state, "system", `The Jammed Door: you roll ${roll} and the door gives.`);
+      say(state, "system", t("log.jammedOk", { roll }));
     }
   }
 
@@ -380,27 +418,52 @@ export function travel(state, toId) {
   if (found) {
     charge(state, RULES.searchMinutes);
     state.status = "found";
-    say(state, "system", `You sweep the ${Math.round(RULES.zoneKm * 1000)} m zone around ${dest.name} and there they are. Found.`, { found: true });
+    say(state, "system",
+        t("log.found", { m: Math.round(RULES.zoneKm * 1000), name: dest.name }), { found: true });
     return { ok: true, found: true };
   }
-  say(state, "system", `No sign of them at ${dest.name}. ${state.candidates.length} station(s) still possible.`);
+  say(state, "system", t("log.noSign", { name: dest.name, n: state.candidates.length }));
 
   resolveThermometer(state);
   checkCornered(state);
   return { ok: true, found: false };
 }
 
+/** One sentence for the journey just taken: how it was made, then what it
+ *  cost, split into moving and waiting. */
+function describeJourney(dest, plan, minutes) {
+  const lines = plan.timetabled
+    ? plan.legs.map((l) => (l.walk ? t("log.onFoot") : l.ref)).join(" → ")
+    : plan.lines.join(" → ");
+  const via = plan.timetabled
+    ? (plan.changes > 0
+        ? t("log.viaChanges", { n: plan.changes, lines })
+        : t("log.viaDirect", { lines }))
+    : t("log.viaPath", { n: plan.stops });
+  const total = formatDuration(minutes);
+  // The wait is scaled with the rest when a curse lengthens the leg, because
+  // the curse lengthens the journey rather than the vehicle.
+  const scale = plan.minutes > 0 ? minutes / plan.minutes : 1;
+  return plan.wait > 0
+    ? t("log.travel", { name: dest.name, via, total,
+                        ride: formatDuration(plan.onboard * scale),
+                        wait: formatDuration(plan.wait * scale) })
+    : t("log.travelNoWait", { name: dest.name, via, total });
+}
+
 function resolveThermometer(state) {
-  const t = state.pendingThermo;
-  if (!t) return;
-  const from = state.world.byId.get(t.fromId);
+  const thermo = state.pendingThermo;
+  if (!thermo) return;
+  const from = state.world.byId.get(thermo.fromId);
   const to = seeker(state);
   const gone = haversine(from, to);
-  if (gone < t.km) {
-    say(state, "system", `Thermometer: ${formatKm(gone)} from ${from.name}. You need ${t.km} km before it can be read.`, { quiet: true });
+  if (gone < thermo.km) {
+    say(state, "system",
+        t("log.thermoShort", { gone: formatKm(gone), name: from.name, km: thermo.km }),
+        { quiet: true });
     return;
   }
-  const q = questionById(state, t.qid);
+  const q = questionById(state, thermo.qid);
   const ctx = { seeker: to, from, to };
   const answer = state.hider.answer(q, ctx);
   const before = state.candidates.length;
@@ -414,7 +477,7 @@ function resolveThermometer(state) {
 // ---------------------------------------------------------------- powerups
 
 function maybePowerups(state) {
-  if (state.status !== "playing") return;
+  if (state.status !== "playing" || !state.cards) return;
   const ctx = { desperate: state.candidates.length < 12 };
 
   if (state.hider.wantsMove()) {
@@ -426,20 +489,19 @@ function maybePowerups(state) {
       state.candidates = move.opened.slice();
       for (const s of state.candidates) state.checked.delete(s.id);
       say(state, "system",
-        `The hider plays Move and relocates to an adjacent station. Everything they ` +
-        `told you described where they were: ${before} possible station(s) becomes ` +
-        `${state.candidates.length}.`, { move: true });
+        t("log.move", { before, after: state.candidates.length }), { move: true, card: "move" });
     }
   }
 
-  const played = state.hider.playHousekeeping(ctx);
-  for (const name of played) say(state, "system", `The hider plays ${name}.`, { quiet: true });
+  for (const id of state.hider.playHousekeeping(ctx)) {
+    say(state, "system", t("log.plays", { name: t(`card.${id}.name`) }), { quiet: true, card: id });
+  }
 }
 
 // ------------------------------------------------------------------ curses
 
 function maybeCurse(state) {
-  if (state.status !== "playing" || state.challenge) return;
+  if (state.status !== "playing" || state.challenge || !state.cards) return;
   const card = state.hider.chooseCurse();
   if (!card) return;
   const def = CURSES[card.id];
@@ -450,7 +512,12 @@ function maybeCurse(state) {
     world: state.world, seeker: seeker(state), travel: state.travel,
     questions: state.questions, hider: state.hider,
   });
-  say(state, "curse", `${def.name} — ${def.flavour}`, { effect });
+  // Three fields rather than one sentence: the panel styles the curse's name,
+  // its flavour and its mechanical effect differently, and it used to get
+  // them by splitting the text back apart on an em dash.
+  say(state, "curse", t(`curse.${card.id}.name`), {
+    curse: card.id, flavour: t(`curse.${card.id}.flavour`), effect,
+  });
 }
 
 /** Resolve the minigame in front of the seeker. Returns a short message. */
@@ -467,7 +534,8 @@ export function challengeStep(state, input) {
     }
     if ([...c.word].every((ch) => c.guessed.has(ch))) {
       state.challenge = null;
-      say(state, "system", `Hangman solved: "${c.word}". ${c.wrong} wrong guess(es), ${c.wrong * c.minutesPerMiss} minutes gone.`);
+      say(state, "system", t("log.hangmanSolved", {
+        word: c.word, n: c.wrong, min: c.wrong * c.minutesPerMiss }));
       return "solved";
     }
     return "continue";
@@ -478,7 +546,8 @@ export function challengeStep(state, input) {
     charge(state, c.minutesPerRoll);
     if (roll >= 5) {
       state.challenge = null;
-      say(state, "system", `The die finally lands on ${roll} after ${c.rolls.length} throw(s), costing ${c.rolls.length * c.minutesPerRoll} minutes.`);
+      say(state, "system", t("log.tumbleSolved", {
+        roll, n: c.rolls.length, min: c.rolls.length * c.minutesPerRoll }));
       return "solved";
     }
     return "continue";
@@ -493,7 +562,8 @@ export function challengeStep(state, input) {
     charge(state, c.minutesPerStep);
     if (c.at === w * h - 1) {
       state.challenge = null;
-      say(state, "system", `Out of the labyrinth in ${c.steps} steps, costing ${c.steps * c.minutesPerStep} minutes.`);
+      say(state, "system", t("log.mazeSolved", {
+        n: c.steps, min: c.steps * c.minutesPerStep }));
       return "solved";
     }
     return "continue";
@@ -512,9 +582,9 @@ function checkCornered(state) {
   if (state.status !== "playing") return;
   if (state.candidates.length === 1) {
     state.hider.commit();
-    say(state, "system", `Only ${state.candidates[0].name} is still consistent with everything you have been told.`);
+    say(state, "system", t("log.cornered", { name: state.candidates[0].name }));
   } else if (state.candidates.length === 0) {
-    say(state, "system", "No station fits. Something has gone wrong with the run.", { bug: true });
+    say(state, "system", t("log.bug"), { bug: true });
   }
 }
 

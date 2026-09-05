@@ -20,14 +20,17 @@ iframe{width:412px;height:915px;border:0;display:block}</style>
 // whether main.js reads real storage correctly; a stub would assert only that
 // the stub was read.
 
+import { t, setLang } from "../js/i18n.js";
+setLang("cs");
+
 const out = document.getElementById("out");
 let bad = 0;
 const log = (m) => out.insertAdjacentHTML("beforeend", m + "<br>");
 const check = (c, m) => { if (!c) bad++; log((c ? "ok: " : "FAIL: ") + m); };
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const until = async (fn, ms = 12000) => {
-  const t = Date.now();
-  while (Date.now() - t < ms) { if (fn()) return true; await wait(60); }
+  const started = Date.now();
+  while (Date.now() - started < ms) { if (fn()) return true; await wait(60); }
   return false;
 };
 
@@ -47,9 +50,10 @@ async function storageWorks() {
 }
 
 const MAP = new URLSearchParams(location.search).get("map") || "brno";
+const MAPNAME = t(`map.${MAP}.name`);
 const f = document.getElementById("f");
 // No go=1: the nag hangs off the Start button, and pressing it is the point.
-f.src = `../index.html?map=${MAP}&seed=7`;
+f.src = `../index.html?map=${MAP}&seed=7&lang=cs`;
 
 f.addEventListener("load", async () => {
   const w = f.contentWindow, d = f.contentDocument;
@@ -72,7 +76,8 @@ f.addEventListener("load", async () => {
   } else {
     check(await until(() => !$("modal").hidden), "Start put the offline nag up first");
     const sheet = $("sheet");
-    check(/not saved for offline/.test(sheet.textContent), "the sheet says the map is not saved");
+    check(sheet.querySelector("h2")?.textContent === t("nag.title", { name: MAPNAME }),
+          "the sheet says the map is not saved");
     const mb = sheet.textContent.match(/(\d+)\s*MB/);
     check(!!mb && Number(mb[1]) > 0, `the sheet quotes a real size (${mb ? mb[1] + " MB" : "none"})`);
     check(!!$("start"), "the start screen is still behind it, so Save is reachable");
@@ -80,7 +85,7 @@ f.addEventListener("load", async () => {
 
     const buttons = [...sheet.querySelectorAll("button")];
     check(buttons.length === 2, "two ways out: save, or play without it");
-    const anyway = buttons.find((b) => /without/i.test(b.textContent));
+    const anyway = buttons.find((b) => b.textContent === t("nag.anyway"));
     check(!!anyway, "one of them plays anyway");
     anyway?.click();
     check(await until(() => !$("app").hidden), "playing anyway starts the round");

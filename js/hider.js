@@ -23,12 +23,18 @@ export class Hider {
    *   reach     journey times out of the starting stop
    *   window    the head start, in minutes
    *   stationId a human hider's chosen stop, if there is one
+   *   cards     whether the deck is in play at all
    */
   constructor(world, difficulty, seed, hiding = {}) {
     this.world = world;
     this.difficulty = difficulty;
     this.rng = mulberry32(seed);
-    this.deck = buildDeck(this.rng);
+    // With cards off there is no deck to shuffle, so every `find`, every
+    // `wants*` and `timeBonus` fall out at zero on an empty hand -- the deck
+    // half of this class simply never fires. game.js guards its own card
+    // paths as well, so neither side depends on the other noticing.
+    this.cards = hiding.cards !== false;
+    this.deck = this.cards ? buildDeck(this.rng) : [];
     this.discard = [];
     this.hand = [];
     this.handLimit = RULES.handLimit;
@@ -222,7 +228,8 @@ export class Hider {
 
   find(id) { return this.hand.find((c) => c.kind === "powerup" && c.id === id); }
 
-  /** Housekeeping powerups, played whenever they are plainly worth it. */
+  /** Housekeeping powerups, played whenever they are plainly worth it.
+   *  Returns the ids played, for game.js to put into words. */
   playHousekeeping(ctx) {
     const played = [];
     const expand = this.find("expand");
@@ -231,7 +238,7 @@ export class Hider {
       this.handLimit++;
       this.hand.push(...this.drawCards(1));
       this.trimHand(ctx);
-      played.push("Expand Hand");
+      played.push("expand");
     }
     // Cycle a filter card only when the hand holds something genuinely poor.
     for (const [id, cost, gain] of [["draw3", 2, 3], ["draw2", 1, 2]]) {
@@ -245,7 +252,7 @@ export class Hider {
       for (let i = 0; i < cost; i++) this.discard.push(...this.hand.splice(this.hand.indexOf(junk[i]), 1));
       this.hand.push(...this.drawCards(gain));
       this.trimHand(ctx);
-      played.push(id === "draw3" ? "Discard 2, Draw 3" : "Discard 1, Draw 2");
+      played.push(id);
     }
     return played;
   }

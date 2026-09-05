@@ -2,7 +2,7 @@
 
 import { loadWorld, MAPS } from "./data.js";
 import {
-  newGame, ask, travel, challengeStep, questionById, nextHop,
+  newGame, ask, travel, challengeStep, questionById, journey,
   randomStart, hidingRange, hidingDefault, hidingChoices, finalScore,
 } from "./game.js";
 import { GameMap } from "./map.js";
@@ -13,6 +13,7 @@ import { handoff, hidePhase } from "./hidephase.js";
 import { formatDuration } from "./geo.js";
 import { packUrls, estimateMb, packStatus, downloadPack, clearPack } from "./offline.js";
 import { keepAwake, releaseWake } from "./wakelock.js";
+import { LANGS, initLang, setLang, t, applyStatic } from "./i18n.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -22,10 +23,10 @@ async function getWorld(id) {
   return worlds.get(id);
 }
 
-let mapId = MAPS[0].id;
 let difficulty = "fair";
 let world = null;
 let players = "solo";            // "solo" or "pass" -- two people, one device
+let cards = true;                // false is the pure-deduction game
 let hidingMinutes = null;        // null means whatever the map's default is
 
 // The run itself, declared up here because ?go=1 starts it from the parameter
@@ -35,34 +36,85 @@ let ui = null;
 let match = null;
 let baseSeed = 0;
 
+// ---- language ----------------------------------------------------------
+
+// The whole card is repainted rather than reloaded, because the fields below
+// are built from JavaScript and half of them describe the map that is already
+// loaded. Choosing a language is a setting, not a restart.
+const params = new URLSearchParams(location.search);
+let lang = initLang(params.get("lang"));
+
+const langChoices = $("langchoices");
+for (const l of LANGS) {
+  const b = document.createElement("button");
+  b.dataset.lang = l.id;
+  b.innerHTML = `<b>${l.name}</b>`;
+  b.addEventListener("click", () => selectLang(l.id));
+  langChoices.append(b);
+}
+
+function selectLang(id) {
+  lang = setLang(id);
+  for (const o of langChoices.children) o.setAttribute("aria-pressed", String(o.dataset.lang === id));
+  applyStatic();
+  repaintStart();
+}
+
+/** Everything on the start screen that JavaScript wrote rather than the
+ *  shell: the map blurbs, the three pickers, and the offline block.
+ *
+ *  Called once on the way in as well as on every language change, which is
+ *  before any map file has landed -- hence the guard. Half of this card
+ *  describes a map, and at that moment there is not one yet. */
+function repaintStart() {
+  for (const b of modeChoices.children) fillChoice(b, `mode.${b.dataset.mode}`);
+  for (const b of cardChoices.children) fillChoice(b, `cards.${b.dataset.cards}`);
+  for (const b of diffChoices.children) fillChoice(b, `diff.${b.dataset.diff}`);
+  selectPlayers(players);
+  if (!world) return;
+  for (const m of MAPS) if (worlds.has(m.id)) describe(mapButton(m.id), worlds.get(m.id));
+  buildHidingChoices();
+  refreshOffline();
+}
+
+/** A picker button: a name and the line underneath explaining it. */
+function fillChoice(btn, key) {
+  btn.innerHTML = `<b>${esc(t(`${key}.name`))}</b><small>${esc(t(`${key}.hint`))}</small>`;
+}
+
 // ---- map picker --------------------------------------------------------
 
 const mapChoices = $("mapchoices");
 const mapButton = (id) => [...mapChoices.children].find((o) => o.dataset.map === id);
 
+// The name and the one-line description are translated rather than read off
+// the data file: the map is Czech geography either way, but "the whole
+// region, by train" is prose, and prose is the dictionary's business. A map
+// nobody has translated falls back to what was baked into its file.
 function describe(btn, w) {
-  btn.querySelector("b").textContent = w.name;
-  btn.querySelector("small").textContent =
-    `${w.blurb ?? ""} — ${w.stations.length} stops, ${w.lines?.length ?? 0} lines`;
+  btn.querySelector("b").textContent = t(`map.${w.id}.name`) || w.name;
+  btn.querySelector("small").textContent = t("start.mapMeta", {
+    blurb: t(`map.${w.id}.blurb`) || w.blurb || "",
+    n: w.stations.length, l: w.lines?.length ?? 0,
+  });
 }
 
 for (const m of MAPS) {
   const b = document.createElement("button");
   b.dataset.map = m.id;
-  b.innerHTML = "<b>…</b><small>loading…</small>";
+  b.innerHTML = `<b>…</b><small>${esc(t("start.loading"))}</small>`;
   b.addEventListener("click", () => selectMap(m.id));
   mapChoices.append(b);
   // Label each map as soon as its file lands, so the picker is informative
   // before anything is chosen.
   getWorld(m.id).then((w) => describe(b, w)).catch(() => {
     b.querySelector("b").textContent = m.id;
-    b.querySelector("small").textContent = "could not be loaded";
+    b.querySelector("small").textContent = t("start.mapFailed");
     b.disabled = true;
   });
 }
 
 async function selectMap(id) {
-  mapId = id;
   for (const o of mapChoices.children) o.setAttribute("aria-pressed", String(o.dataset.map === id));
   world = await getWorld(id);
   describe(mapButton(id), world);
@@ -77,6 +129,7 @@ async function selectMap(id) {
 // Per map, because reachability is: half an hour is most of Brno's tram
 // network and about a dozen village halts on the region map.
 function buildHidingChoices() {
+  if (!world) return;
   const box = $("hidechoices");
   box.innerHTML = "";
   const options = hidingChoices(world);
@@ -128,7 +181,7 @@ async function refreshOffline() {
   if (downloading || !world) return;
   const state = $("offstate"), box = $("offbtns");
   if (!("caches" in window) || !("serviceWorker" in navigator)) {
-    state.textContent = "This browser cannot store maps for offline play.";
+    state.textContent = t("off.cannot");
     box.hidden = true;
     return;
   }
@@ -136,27 +189,27 @@ async function refreshOffline() {
   // consulted -- if storage is slow or blocked the buttons are still usable
   // and still honest about what they will cost.
   const mb = (lvl) => Math.round(estimateMb(packUrls(world, lvl)));
-  $("offmap").textContent = `Map · ${mb("map")} MB`;
-  $("offphotos").textContent = `Map + photos · ${mb("photos")} MB`;
+  const name = t(`map.${world.id}.name`) || world.name;
+  $("offmap").textContent = t("off.btnMap", { mb: mb("map") });
+  $("offphotos").textContent = t("off.btnPhotos", { mb: mb("photos") });
   box.hidden = false;
   for (const b of box.children) b.disabled = false;
-  state.textContent = `Save ${world.name} to play with no signal.`;
+  state.textContent = t("off.save", { name });
 
   try {
     const [map, photos] = await Promise.all([
       packStatus(world, "map"), packStatus(world, "photos"),
     ]);
     if (photos.fraction > 0.98) {
-      state.innerHTML = `<b style="color:var(--candidate)">${world.name} is fully saved, photos and all.</b>`;
+      state.innerHTML = `<b style="color:var(--candidate)">${esc(t("off.full", { name }))}</b>`;
     } else if (map.fraction > 0.98) {
-      state.innerHTML = `<b style="color:var(--candidate)">${world.name} is saved and playable offline.</b>`
-        + ` Add photos if you want the Photo questions too.`;
+      state.innerHTML = `<b style="color:var(--candidate)">${esc(t("off.mapOnly", { name }))}</b>`
+        + esc(t("off.addPhotos"));
     } else if (map.fraction > 0.02) {
-      state.textContent = `${world.name} is ${Math.round(map.fraction * 100)}% saved.`;
+      state.textContent = t("off.partial", { name, pct: Math.round(map.fraction * 100) });
     }
   } catch (err) {
-    state.textContent = `Save ${world.name} to play with no signal. `
-      + `(Could not read what is already stored: ${err.message}.)`;
+    state.textContent = t("off.unreadable", { name, err: err.message });
   }
 }
 
@@ -167,6 +220,7 @@ async function runDownload(level) {
   for (const b of $("offbtns").children) b.disabled = true;
   bar.hidden = false;
   const started = Date.now();
+  const name = t(`map.${world.id}.name`) || world.name;
   try {
     const { total, failed } = await downloadPack(world, {
       level,
@@ -174,16 +228,16 @@ async function runDownload(level) {
         fill.style.width = `${(done / all) * 100}%`;
         const secs = (Date.now() - started) / 1000;
         const left = done > 40 ? Math.round((all - done) * (secs / done)) : 0;
-        state.textContent = `Saving ${world.name}: ${done} of ${all} tiles`
-          + (left > 5 ? `, about ${left}s left` : "") + (bad ? ` (${bad} unavailable)` : "");
+        state.textContent = t("off.saving", { name, done, all })
+          + (left > 5 ? t("off.savingLeft", { secs: left }) : "")
+          + (bad ? t("off.savingBad", { bad }) : "");
       },
     });
     if (failed) {
-      state.innerHTML = `Saved ${total - failed} of ${total} tiles. `
-        + `<b>${failed}</b> could not be fetched — run it again to fill the gaps.`;
+      state.innerHTML = t("off.savedSome", { ok: total - failed, total, failed });
     }
   } catch (err) {
-    state.textContent = `Could not finish saving: ${err.message}`;
+    state.textContent = t("off.saveError", { err: err.message });
   } finally {
     downloading = false;
     setTimeout(() => { bar.hidden = true; fill.style.width = "0"; }, 1200);
@@ -227,19 +281,17 @@ async function tilesAreMissing() {
 
 function nagAboutTiles() {
   const mb = Math.round(estimateMb(packUrls(world, "map")));
+  const name = t(`map.${world.id}.name`) || world.name;
   $("sheet").innerHTML =
-    `<h2>${esc(world.name)} is not saved for offline</h2>`
-    + `<p class="sheetnote">The questions, the cards and the clock already work `
-    + `with no signal. The map itself does not — on a train it would be blank, `
-    + `and there would be no way to fix that from the train. Saving it costs `
-    + `about <b>${mb} MB</b> and takes a minute or two on wifi.</p>`;
+    `<h2>${esc(t("nag.title", { name }))}</h2>`
+    + `<p class="sheetnote">${t("nag.body", { mb })}</p>`;
 
   const row = document.createElement("div");
   row.className = "row";
 
   const save = document.createElement("button");
   save.className = "btn";
-  save.textContent = `Save the map · ${mb} MB`;
+  save.textContent = t("nag.save", { mb });
   // Back to the start screen rather than straight into the round: the
   // download has a progress bar there, and starting a run on top of six
   // parallel tile fetches is a bad first minute.
@@ -247,7 +299,7 @@ function nagAboutTiles() {
 
   const anyway = document.createElement("button");
   anyway.className = "btn ghost";
-  anyway.textContent = "Play without it";
+  anyway.textContent = t("nag.anyway");
   anyway.addEventListener("click", () => { closeSheet(); start(); });
 
   row.append(save, anyway);
@@ -273,21 +325,41 @@ $("offclear").addEventListener("click", async () => {
 // takes over is the answering -- it knows where the hider went, so it replies
 // truthfully on their behalf -- and the card play, because handing the phone
 // back for every question is not a game anyone would finish.
-const MODES = [
-  { id: "solo", name: "On your own",
-    hint: "The app hides and answers. Pick how cunning it is below." },
-  { id: "pass", name: "Two players, one device",
-    hint: "One hides and passes the phone; the other seeks. Whoever is found, the next round starts where they were found." },
-];
-
 const modeChoices = $("modechoices");
-for (const m of MODES) {
+for (const id of ["solo", "pass"]) {
   const b = document.createElement("button");
-  b.dataset.mode = m.id;
-  b.innerHTML = `<b>${m.name}</b><small>${m.hint}</small>`;
-  b.setAttribute("aria-pressed", String(m.id === players));
-  b.addEventListener("click", () => selectPlayers(m.id));
+  b.dataset.mode = id;
+  fillChoice(b, `mode.${id}`);
+  b.setAttribute("aria-pressed", String(id === players));
+  b.addEventListener("click", () => selectPlayers(id));
   modeChoices.append(b);
+}
+
+// ---- cards, or no cards ------------------------------------------------
+
+// The hider deck is the half of the rulebook that is not deduction: draws,
+// time bonuses, vetoes, curses and minigames. It is also the half that turns
+// a twenty-minute round into a forty-minute one and can decide it on a die,
+// which is a fine game and not always the game you want on a tram.
+//
+// Turning it off removes exactly that and nothing else. The questions, the
+// candidate set, the hiding window and the travel model are untouched, so the
+// score becomes the clock and the clock becomes entirely your own doing.
+const cardChoices = $("cardchoices");
+for (const [id, on] of [["on", true], ["off", false]]) {
+  const b = document.createElement("button");
+  b.dataset.cards = id;
+  fillChoice(b, `cards.${id}`);
+  b.setAttribute("aria-pressed", String(on === cards));
+  b.addEventListener("click", () => selectCards(on));
+  cardChoices.append(b);
+}
+
+function selectCards(on) {
+  cards = on;
+  for (const o of cardChoices.children) {
+    o.setAttribute("aria-pressed", String((o.dataset.cards === "on") === cards));
+  }
 }
 
 function selectPlayers(id) {
@@ -297,27 +369,27 @@ function selectPlayers(id) {
   // for it to decide, so the choice goes away rather than sitting there lying.
   $("difffield").hidden = id === "pass";
   $("namefield").hidden = id !== "pass";
-  $("play").textContent = id === "pass" ? "Start the match" : "Start the run";
+  $("play").textContent = id === "pass" ? t("start.playMatch") : t("start.play");
 }
 
 const playerNames = () => [
-  ($("p1").value || "").trim() || "Player 1",
-  ($("p2").value || "").trim() || "Player 2",
+  ($("p1").value || "").trim() || t("start.p1"),
+  ($("p2").value || "").trim() || t("start.p2"),
 ];
 
 // ---- hider picker ------------------------------------------------------
 
-const choices = $("diffchoices");
+const diffChoices = $("diffchoices");
 for (const d of Object.values(DIFFICULTY)) {
   const b = document.createElement("button");
   b.dataset.diff = d.id;
-  b.innerHTML = `<b>${d.name}</b><small>${d.hint}</small>`;
+  fillChoice(b, `diff.${d.id}`);
   b.setAttribute("aria-pressed", String(d.id === difficulty));
   b.addEventListener("click", () => {
     difficulty = d.id;
-    for (const o of choices.children) o.setAttribute("aria-pressed", String(o === b));
+    for (const o of diffChoices.children) o.setAttribute("aria-pressed", String(o === b));
   });
-  choices.append(b);
+  diffChoices.append(b);
 }
 
 $("seed").value = String(Math.floor(Math.random() * 1e6));
@@ -326,15 +398,18 @@ $("play").addEventListener("click", async () => {
   start();
 });
 
-// ?map=brno&seed=123&hider=devious&go=1 opens straight into a specific round,
-// which makes a run shareable and gives the screenshot tests something to bite on.
-const params = new URLSearchParams(location.search);
+// ?map=brno&seed=123&hider=devious&lang=en&cards=0&go=1 opens straight into a
+// specific round, which makes a run shareable and gives the screenshot tests
+// something to bite on.
 if (params.has("seed")) $("seed").value = params.get("seed");
 if (params.has("hider") && DIFFICULTY[params.get("hider")]) {
   difficulty = params.get("hider");
-  for (const o of choices.children) o.setAttribute("aria-pressed", String(o.dataset.diff === difficulty));
+  for (const o of diffChoices.children) o.setAttribute("aria-pressed", String(o.dataset.diff === difficulty));
 }
 if (params.has("hiding")) hidingMinutes = Number(params.get("hiding")) || null;
+if (params.has("cards")) selectCards(params.get("cards") !== "0");
+// initLang already ran, up where the picker is built; this only paints it.
+selectLang(lang);
 const wanted = params.get("map");
 await selectMap(MAPS.some((m) => m.id === wanted) ? wanted : MAPS[0].id);
 selectPlayers(params.get("players") === "2" ? "pass" : "solo");
@@ -397,12 +472,13 @@ async function playRound() {
   let hiderStationId = null;
   if (match) {
     await handoff({
-      eyebrow: `Round ${match.round}`,
-      title: `${match.hiderName} hides`,
-      text: `The round starts at <b>${esc(start.name)}</b>, and you have ` +
-            `<b>${formatDuration(range.minutes)}</b> to get away from it. ` +
-            `${esc(match.seekerName)}: look away.`,
-      action: `I'm ${match.hiderName} — show me the map`,
+      eyebrow: t("ho.round", { n: match.round }),
+      title: t("ho.hides", { name: match.hiderName }),
+      text: t("ho.hidesText", {
+        start: esc(start.name), window: formatDuration(range.minutes),
+        other: esc(match.seekerName),
+      }),
+      action: t("ho.hidesBtn", { name: match.hiderName }),
     });
     hiderStationId = await hidePhase({
       gmap, world, start, range, name: match.hiderName,
@@ -411,12 +487,13 @@ async function playRound() {
     // in on where they went, which would hand over the answer for nothing.
     gmap.reset();
     await handoff({
-      eyebrow: `Round ${match.round}`,
-      title: `${match.seekerName} seeks`,
-      text: `${esc(match.hiderName)} is hidden somewhere within ` +
-            `<b>${formatDuration(range.minutes)}</b> of ${esc(start.name)}. ` +
-            `The app answers for them, truthfully, from where they actually are.`,
-      action: `I'm ${match.seekerName} — start the clock`,
+      eyebrow: t("ho.round", { n: match.round }),
+      title: t("ho.seeks", { name: match.seekerName }),
+      text: t("ho.seeksText", {
+        other: esc(match.hiderName), window: formatDuration(range.minutes),
+        start: esc(start.name),
+      }),
+      action: t("ho.seeksBtn", { name: match.seekerName }),
     });
   }
 
@@ -424,7 +501,7 @@ async function playRound() {
     // A person has already chosen a stop, so there is nothing for a devious
     // hider to be devious with: this round is answered from one place.
     difficulty: match ? "fair" : difficulty,
-    seed, startId: start.id, hidingMinutes, hiderStationId,
+    seed, startId: start.id, hidingMinutes, hiderStationId, cards,
   });
 
   let recorded = false;
@@ -476,5 +553,5 @@ async function playRound() {
   gmap.fitStops([start, ...state.candidates]);
   // Exposed for the console while playing, and for tools/uitest.html.
   window.__debug = { phase: "seeking", state, ui, gmap, match, start, range,
-                     ask, travel, challengeStep, nextHop };
+                     ask, travel, challengeStep, journey };
 }

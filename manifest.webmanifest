@@ -1,7 +1,8 @@
 {
-  "name": "Hide + Seek — South Moravia & Brno",
+  "name": "Hide + Seek — jižní Morava a Brno",
   "short_name": "Hide + Seek",
-  "description": "The Jet Lag hide-and-seek game, played over real Czech transit networks.",
+  "description": "Hra na schovávanou z Jet Lag: The Game, hraná po skutečné české veřejné dopravě. Česky i anglicky.",
+  "lang": "cs",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

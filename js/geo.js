@@ -1,4 +1,10 @@
 // Spherical geometry helpers. Distances in kilometres, angles in degrees.
+//
+// The three formatters are here rather than in i18n.js because they are what
+// the rest of the game reaches for; the language only decides the punctuation
+// around the number ("3.2 km" against "3,2 km", "1h 05m" against "1 h 05 min").
+
+import { t } from "./i18n.js";
 
 export const R_EARTH = 6371.0088;
 
@@ -32,15 +38,16 @@ export function lonScale(lat) {
 }
 
 export function formatKm(km) {
-  if (km < 1) return `${Math.round(km * 1000)} m`;
-  if (km < 10) return `${km.toFixed(1)} km`;
-  return `${Math.round(km)} km`;
+  if (km < 1) return t("fmt.metres", { m: Math.round(km * 1000) });
+  const n = km < 10 ? km.toFixed(1).replace(".", t("fmt.decimal")) : Math.round(km);
+  return t("fmt.km", { km: n });
 }
 
 export function formatDuration(minutes) {
   const m = Math.max(0, Math.round(minutes));
   const h = Math.floor(m / 60);
-  return h ? `${h}h ${String(m % 60).padStart(2, "0")}m` : `${m}m`;
+  return h ? t("fmt.hours", { h, m: String(m % 60).padStart(2, "0") })
+           : t("fmt.minutes", { m });
 }
 
 /** Clock time as HH:MM from minutes since midnight. */

@@ -42,7 +42,11 @@ html, body {
 #head h1 span { color: var(--candidate); }
 #head .sub { color: var(--dim); font-size: 13px; margin-top: 2px; }
 
-#hud { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); }
+/* Auto columns rather than a fixed three: with the hider deck out of play
+   the card count goes away entirely, and a fixed template would leave an
+   empty third of the row where it used to be. */
+#hud { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; border-bottom: 1px solid var(--line); }
+.stat[hidden] { display: none; }
 .stat { padding: 10px 14px; text-align: center; border-right: 1px solid var(--line); }
 .stat:last-child { border-right: 0; }
 .stat b { display: block; font-family: var(--mono); font-size: 21px; font-variant-numeric: tabular-nums; }
@@ -218,6 +222,37 @@ html, body {
 .entry.curse b { color: var(--hider); display: block; }
 .entry.curse .fx { font-size: 14px; color: #ffc2ca; }
 .photo { width: 100%; aspect-ratio: 4 / 3; border-radius: 6px; margin-top: 6px; border: 1px solid var(--line); }
+
+/* ------------------------------------------------------------- journeys */
+
+/* The itinerary, shown wherever a journey is offered: in the map popup, and
+   again on the confirmation sheet the departure board opens.
+
+   It exists because travel stopped being one ride on one line. The old model
+   refused anything off your line and told you to change at an interchange,
+   which was tiring but did teach -- three minutes at a time -- that a change
+   costs a wait. Doing the connecting for the player must not also hide that,
+   so the split and the legs go next to the number every single time. */
+.jsplit {
+  font-size: 12px; color: var(--candidate); margin: 6px 0 4px;
+  font-family: var(--mono);
+}
+.jlegs {
+  list-style: none; margin: 0 0 10px; padding: 0;
+  display: grid; gap: 4px;
+  border-left: 2px solid var(--line); padding-left: 9px;
+}
+.jlegs li { font-size: 12px; color: var(--dim); }
+.jlegs li b { display: block; font-size: 13px; color: var(--text); font-weight: 600; }
+.jlegs li span { font-family: var(--mono); font-size: 11px; }
+/* The same colours the departure board uses for a mode, so a leg on line 1
+   reads as the same thing in both places. */
+.jlegs li.tram b { color: var(--hider); }
+.jlegs li.trolleybus b { color: var(--candidate); }
+.jlegs li.bus b { color: var(--seeker); }
+.jlegs li.onfoot b { color: var(--checked); }
+/* A long journey inside a Leaflet popup has to stop somewhere. */
+.leaflet-popup-content .jlegs { max-height: 190px; overflow-y: auto; }
 
 /* --------------------------------------------------------------- modal */
 

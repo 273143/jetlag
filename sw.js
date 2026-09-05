@@ -10,12 +10,13 @@
 //          Never purged on activate -- a user on a train has paid for those
 //          megabytes once and should not lose them to a code update.
 
-// Bump on any change to the files below. v9: the start screen scrolls on a
-// phone. v8: js/wakelock.js. v7: the panel's
+// Bump on any change to the files below. v10: js/i18n.js -- Czech and English,
+// the cards-off game, and one-click journeys. v9: the start screen scrolls on
+// a phone. v8: js/wakelock.js. v7: the panel's
 // Ask / Answers panes. v6: added js/match.js and
 // js/hidephase.js for the two-player pass-and-play. v5 added js/timetable.js,
 // and app files are served network-first (see the fetch handler).
-const SHELL = "hs-shell-v9";
+const SHELL = "hs-shell-v10";
 const TILES = "hs-tiles-v1";
 
 const SHELL_FILES = [
@@ -23,7 +24,7 @@ const SHELL_FILES = [
   "./css/style.css",
   "./js/main.js", "./js/data.js", "./js/game.js", "./js/questions.js",
   "./js/rules.js", "./js/hider.js", "./js/deck.js", "./js/curses.js",
-  "./js/map.js", "./js/ui.js", "./js/geo.js", "./js/offline.js",
+  "./js/map.js", "./js/ui.js", "./js/geo.js", "./js/offline.js", "./js/i18n.js",
   "./js/timetable.js", "./js/match.js", "./js/hidephase.js",
   "./js/wakelock.js",
   "./vendor/leaflet.js", "./vendor/leaflet.css",

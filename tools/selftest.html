@@ -10,12 +10,14 @@
 //   1. the hider is never eliminated from the candidate set by their own answer
 //   2. the candidate set never empties
 //   3. a seeker that keeps asking and searching always finishes
-//   4. nothing throws
+//   4. a journey's wait and time on board add up to what it charges
+//   5. with the deck out of play, no card ever fires and the score is the clock
+//   6. nothing throws
 //
 // Run via tools/test.sh.
 
 import { loadWorld } from "../js/data.js";
-import { newGame, ask, travel, challengeStep, askBlocker, travelBlocker, finalScore, seeker, nextHop } from "../js/game.js";
+import { newGame, ask, travel, challengeStep, askBlocker, travelBlocker, finalScore, seeker, journey } from "../js/game.js";
 import { RULES } from "../js/rules.js";
 import { mulberry32 } from "../js/deck.js";
 import { haversine } from "../js/geo.js";
@@ -53,9 +55,9 @@ function mazeStep(maze, at) {
 }
 
 /** Play one full run with a simple but competent automatic seeker. */
-function playRun(difficulty, seed) {
+function playRun(difficulty, seed, cards = true) {
   const rng = mulberry32(seed * 7919 + 13);
-  const state = newGame(world, { difficulty, seed });
+  const state = newGame(world, { difficulty, seed, cards });
   let searchTarget = null;
   let turns = 0;
 
@@ -103,14 +105,12 @@ function playRun(difficulty, seed) {
                        haversine(s, from) >= need && isFinite(state.travel.minutes[s.id]))
         .sort((a, b) => state.travel.minutes[a.id] - state.travel.minutes[b.id]);
       if (!far.length) { fail(`${difficulty}/${seed}: nowhere ${need} km from ${from.name}`); break; }
-      // Travel is one line at a time on a timetabled map, so "go there" is a
-      // plan: take the first leg of it and come round again.
-      travel(state, nextHop(state, far[0].id) ?? far[0].id);
+      checkJourney(state, far[0].id, difficulty, seed);
+      travel(state, far[0].id);
       // Walking off a thermometer can walk you straight into the hider, which
       // ends the run before there is anything left to read. That is a win, not
       // a stuck thermometer, so check the run is still going before judging.
       if (state.status !== "playing") break;
-      // One leg may not be far enough yet; the loop will take the next.
       continue;
     }
     if (rng() < 0.16) {
@@ -124,34 +124,22 @@ function playRun(difficulty, seed) {
 
     // Down to one candidate, or feeling lucky: go and look.
     if (state.candidates.length <= 1 || !askable.length || rng() < 0.12) {
-      // Stick with a destination until you get there. With travel restricted
-      // to one line at a time, picking a fresh random candidate every turn
-      // walks half a leg towards one, half a leg back towards another, and
-      // arrives nowhere -- which is a bot bug, but it is also exactly how a
-      // player loses an hour, so it is worth the test holding a target.
       if (searchTarget == null || !state.candidates.some((c) => c.id === searchTarget)) {
         const pick = state.candidates[Math.floor(rng() * state.candidates.length)];
         if (!pick) { fail(`${difficulty}/${seed}: no candidates left to search`); break; }
         searchTarget = pick.id;
       }
       const target = world.byId.get(searchTarget);
-      const legId = nextHop(state, target.id) ?? target.id;
-      if (legId === state.seekerId && target.id !== state.seekerId) {
-        fail(`${difficulty}/${seed}: no first leg towards ${target.name}`); break;
-      }
-      const res = travel(state, legId);
+      checkJourney(state, target.id, difficulty, seed);
+      const res = travel(state, target.id);
       if (state.seekerId === searchTarget) searchTarget = null;
-      if (!res.ok && travelBlocker(state, legId)) {
-        // Blocked (u-turn, travel agent): obey the instruction instead. That
-        // is a plan too, not a move -- the forced station is rarely on a line
-        // out of wherever you happen to be standing, and travelling straight
-        // at it silently did nothing, which is how a run span out to the turn
-        // limit with three candidates left and no way to reach any of them.
+      if (!res.ok && travelBlocker(state, target.id)) {
+        // Blocked by a u-turn or the travel agent: obey the instruction. It is
+        // one move now, whichever line it is on.
         const forced = state.effects.forcedReturn ?? state.effects.mustVisit;
         if (forced == null) { fail(`${difficulty}/${seed}: travel blocked with no forced destination — ${res.reason}`); break; }
-        const leg = nextHop(state, forced) ?? forced;
-        const forcedRes = travel(state, leg);
-        if (!forcedRes.ok) { fail(`${difficulty}/${seed}: could not move towards forced ${world.byId.get(forced).name} — ${forcedRes.reason}`); break; }
+        const forcedRes = travel(state, forced);
+        if (!forcedRes.ok) { fail(`${difficulty}/${seed}: could not reach forced ${world.byId.get(forced).name} — ${forcedRes.reason}`); break; }
       }
       continue;
     }
@@ -189,6 +177,34 @@ function playRun(difficulty, seed) {
   return { state, turns };
 }
 
+/**
+ * The journey about to be taken adds up.
+ *
+ * The seeker is shown the total, the time moving and the time waiting, and
+ * decides on the split as much as on the total -- four minutes on a platform
+ * is the difference between changing and staying on. A split that did not sum
+ * to the price charged would be a lie told confidently, and nothing else in
+ * the game would notice.
+ */
+function checkJourney(state, toId, difficulty, seed) {
+  const plan = journey(state, toId);
+  if (!plan) return;                       // unreachable: travel refuses it too
+  const where = `${difficulty}/${seed}: journey to ${world.byId.get(toId).name}`;
+  if (Math.abs(plan.onboard + plan.wait - plan.minutes) > 1e-6)
+    fail(`${where} splits ${plan.onboard} + ${plan.wait} but charges ${plan.minutes}`);
+  if (plan.minutes < 0) fail(`${where} costs ${plan.minutes} minutes`);
+  if (!plan.timetabled) return;
+  // The legs have to be a walk from here to there, in order, or the itinerary
+  // on screen describes a different journey from the one being paid for.
+  let at = state.seekerId;
+  for (const leg of plan.legs) {
+    if (leg.fromId !== at) { fail(`${where} has a leg starting at the wrong stop`); return; }
+    if (leg.wait < 0 || leg.onboard < 0) fail(`${where} has a negative leg`);
+    at = leg.toId;
+  }
+  if (plan.legs.length && at !== toId) fail(`${where} ends its last leg somewhere else`);
+}
+
 function checkInvariants(state, difficulty, seed) {
   const h = state.hider;
   if (state.candidates.length === 0 && state.status === "playing")
@@ -217,12 +233,12 @@ let openings = [];
 /** Count what actually happened, so a feature that never fires shows up as a
  *  zero here rather than sitting in the source looking implemented. */
 function tallyRun(state) {
+  // By id, not by the sentence in the log: the sentences come in two
+  // languages now, and a tally that reads them would quietly count zero of
+  // everything the moment the interface was in the other one.
   for (const e of state.log) {
-    if (e.who === "curse") tally("curse: " + e.text.split(" — ")[0]);
-    else if (e.veto) tally("powerup: Veto");
-    else if (e.move) tally("powerup: Move");
-    else if (/^Randomize\./.test(e.text)) tally("powerup: Randomize");
-    else if (/^The hider plays /.test(e.text)) tally("powerup: " + e.text.replace(/^The hider plays /, "").replace(/\.$/, ""));
+    if (e.curse) tally("curse: " + e.curse);
+    else if (e.card) tally("powerup: " + e.card);
     else if (e.photo) tally("question: photo answered");
   }
   for (const id of state.asked.keys()) tally("category: " + state.questions.find((q) => q.id === id).cat);
@@ -265,11 +281,42 @@ const med = (a) => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
 log(`opening position: ${starts.size} different starting stops over 30 rounds, ` +
     `median ${med(openings)} stops in play out of ${world.stations.length}`);
 if (starts.size < 10) fail(`only ${starts.size} distinct starting stops in 30 rounds`);
+
+// The pure-deduction game, on the same map and the same seeds.
+//
+// What is being checked is that the deck is *gone*, not merely quiet: an
+// empty hand would produce a silent round on its own, so a guard that had
+// stopped working would look exactly like this test passing. The deck itself
+// has to be unbuilt, nothing card-shaped may appear in the log, and the score
+// has to be the clock and nothing else.
+{
+  const stats = [];
+  for (let seed = 1; seed <= 10; seed++) {
+    try {
+      const { state } = playRun("fair", seed, false);
+      const score = finalScore(state);
+      if (state.hider.deck.length || state.hider.hand.length)
+        fail(`no-cards/${seed}: the hider holds ${state.hider.hand.length} card(s) from a deck of ${state.hider.deck.length}`);
+      const fired = state.log.filter((e) => e.card || e.curse || e.veto || e.move);
+      if (fired.length) fail(`no-cards/${seed}: ${fired.length} card event(s) in a run with no cards`);
+      if (state.challenge) fail(`no-cards/${seed}: a curse minigame opened`);
+      if (score.bonus !== 0 || score.total !== score.elapsed)
+        fail(`no-cards/${seed}: score ${score.total} is not the clock ${score.elapsed}`);
+      stats.push(score.total);
+    } catch (err) {
+      fail(`no-cards/${seed}: threw — ${err && err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : err}`);
+    }
+  }
+  if (stats.length) {
+    const v = stats.slice().sort((a, b) => a - b);
+    log(`no cards: ${stats.length} runs · median score ${Math.round(v[Math.floor(v.length / 2)])} min`);
+  }
+}
 }
 
 log("\nwhat actually fired across all runs:");
 for (const [k, n] of [...seen].sort()) log(`  ${n.toString().padStart(4)}  ${k}`);
-const never = ["Veto", "Move", "Randomize", "Expand Hand"].filter((k) => !seen.has("powerup: " + k));
+const never = ["veto", "move", "randomize", "expand"].filter((k) => !seen.has("powerup: " + k));
 if (never.length) log(`  never fired: ${never.join(", ")}`);
 
 log(failures ? `\n${failures} FAILURE(S)` : "\nall invariants held");

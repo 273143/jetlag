@@ -131,42 +131,24 @@ export const RULES = {
       // block, where that distinction did most of the cutting. The region
       // map has not had that pass yet, so both lists are the old `targets`
       // and its question set is unchanged.
-      matching: [
-        { cat: "river",      label: "river" },
-        { cat: "castle",     label: "castle or chateau" },
-        { cat: "brewery",    label: "brewery" },
-        { cat: "hospital",   label: "hospital" },
-        { cat: "aerodrome",  label: "aerodrome" },
-        { cat: "university", label: "university" },
-        { cat: "cinema",     label: "cinema" },
-        { cat: "zoo",        label: "zoo" },
-        { cat: "theme_park", label: "theme park" },
-      ],
-      measuring: [
-        { cat: "river",      label: "river" },
-        { cat: "castle",     label: "castle or chateau" },
-        { cat: "brewery",    label: "brewery" },
-        { cat: "hospital",   label: "hospital" },
-        { cat: "aerodrome",  label: "aerodrome" },
-        { cat: "university", label: "university" },
-        { cat: "cinema",     label: "cinema" },
-        { cat: "zoo",        label: "zoo" },
-        { cat: "theme_park", label: "theme park" },
-      ],
+      matching: ["river", "castle", "brewery", "hospital", "aerodrome",
+                 "university", "cinema", "zoo", "theme_park"],
+      measuring: ["river", "castle", "brewery", "hospital", "aerodrome",
+                  "university", "cinema", "zoo", "theme_park"],
       // No `kindQuestion` here yet, so match_mode does not appear on this map
       // and its question set is unchanged by the Brno cut. The field it would
       // use is already baked: 88 stations against 92 halts, which would split
       // the region almost exactly in half. Worth adding when the region map
       // gets its own pass.
       tentacles: [
-        { cat: "river",      km: 1,  label: "rivers" },          // 47%
-        { cat: "castle",     km: 3,  label: "castles & chateaux" },
-        { cat: "brewery",    km: 3,  label: "breweries" },
-        { cat: "aerodrome",  km: 5,  label: "aerodromes" },
-        { cat: "cinema",     km: 5,  label: "cinemas" },
-        { cat: "hospital",   km: 6,  label: "hospitals" },
-        { cat: "university", km: 10, label: "universities" },
-        { cat: "zoo",        km: 12, label: "zoos" },
+        { cat: "river",      km: 1 },                            // 47%
+        { cat: "castle",     km: 3 },
+        { cat: "brewery",    km: 3 },
+        { cat: "aerodrome",  km: 5 },
+        { cat: "cinema",     km: 5 },
+        { cat: "hospital",   km: 6 },
+        { cat: "university", km: 10 },
+        { cat: "zoo",        km: 12 },
       ],
     },
     brno: {
@@ -236,9 +218,7 @@ export const RULES = {
       // OSM's five Brno "zoos" are the actual zoo plus a butterfly house, a
       // llama centre, Slepicky z Rokle and Kozi zahrada, so its apparently
       // strong 63% was noise rather than geography.
-      matching: [
-        { cat: "river", label: "river" },                      // 56%
-      ],
+      matching: ["river"],                                   // 56%
       // Every "is your nearest X closer to you than mine is to me?" scored
       // between 67.0% and 69.1% -- a 2.1 point spread across eight questions
       // built on eight different POI categories. They were one question in
@@ -267,9 +247,9 @@ export const RULES = {
       // and "none within 4 km" covered two thirds of the map. A coin flip at
       // the most expensive price in the game.
       tentacles: [
-        { cat: "hospital", km: 4,   label: "hospitals" },      // 16%
-        { cat: "cinema",   km: 4,   label: "cinemas" },        // 20%
-        { cat: "brewery",  km: 2.5, label: "breweries" },      // 19%
+        { cat: "hospital", km: 4 },                            // 16%
+        { cat: "cinema",   km: 4 },                            // 20%
+        { cat: "brewery",  km: 2.5 },                          // 19%
       ],
 
       // The questions that are not built from a POI list are declared here by
@@ -296,14 +276,11 @@ export const RULES = {
       // where the merged stop includes a railway=tram_stop node, so the
       // question is really "trams, or no trams -- the same as me?", and the
       // context line tells the seeker which side they are on before they pay.
-      kindQuestion: {
-        value: "tram",
-        short: "means of transport",
-        text: "Is your stop served by the same means of transport as mine — tram, or not?",
-        yours: "trams serve your stop",
-        notYours: "no tram serves your stop, only buses and trolleybuses",
-        options: ["served by trams", "buses and trolleybuses only"],
-      },
+      // The stop `kind` baked into the map is "tram" where the merged stop
+      // includes a railway=tram_stop node. Only the value is a rule; the
+      // wording lives in js/i18n.js under `kind.brno.*`, because it is one
+      // question with different words on each map and in each language.
+      kindQuestion: { value: "tram" },
       // Zoom 11 covers most of Brno and its outskirts, so photo_sky was ten
       // minutes for a picture that could be anywhere. The other three are a
       // rooftop, a neighbourhood and a quarter of the city.
@@ -327,35 +304,53 @@ export const RULES = {
       { minutes: 5, count: 10 }, { minutes: 10, count: 8 },
       { minutes: 15, count: 5 }, { minutes: 20, count: 3 }, { minutes: 30, count: 2 },
     ],
+    // What each powerup does is in js/hider.js, what it is called is in
+    // js/i18n.js under `card.<id>.name`; here only how many are in the deck.
+    //
+    //   veto       play instead of answering; the seekers learn only that
+    //   randomize  they must ask a different question from the same category
+    //   draw2/3    discard n, draw n+1, at any time
+    //   expand     draw 1 and raise the hand limit by 1
+    //   duplicate  counts as a copy of any other card in hand
+    //   move       relocate to an adjacent station, seekers frozen
     powerups: [
-      { id: "veto",       count: 3, name: "Veto",            text: "Play instead of answering. The seekers learn only that you vetoed, and you draw nothing." },
-      { id: "randomize",  count: 2, name: "Randomize",       text: "The seekers must ask a different random question from the same category." },
-      { id: "draw2",      count: 3, name: "Discard 1, Draw 2", text: "Play at any time." },
-      { id: "draw3",      count: 2, name: "Discard 2, Draw 3", text: "Play at any time." },
-      { id: "expand",     count: 2, name: "Expand Hand",     text: "Draw 1 and raise your hand limit by 1." },
-      { id: "duplicate",  count: 2, name: "Duplicate",       text: "Counts as a copy of any other card in your hand." },
-      { id: "move",       count: 2, name: "Move",            text: "Relocate to an adjacent station. Your timer pauses and the seekers may not ask or travel." },
+      { id: "veto",       count: 3 },
+      { id: "randomize",  count: 2 },
+      { id: "draw2",      count: 3 },
+      { id: "draw3",      count: 2 },
+      { id: "expand",     count: 2 },
+      { id: "duplicate",  count: 2 },
+      { id: "move",       count: 2 },
     ],
-    // Curses: name and effect are the rulebook's; the physical casting cost
-    // and physical challenge are reworked for a screen (see curses.js).
+    // Curses: the effects are the rulebook's; the physical casting cost and
+    // physical challenge are reworked for a screen (see curses.js). `cost` is
+    // how many cards must be discarded to cast it.
     curses: [
-      { id: "jammed_door",   count: 2, name: "The Jammed Door",   cost: 2 },
-      { id: "gamblers_feet", count: 2, name: "The Gambler's Feet", cost: 1 },
-      { id: "right_turn",    count: 2, name: "The Right Turn",     cost: 1 },
-      { id: "u_turn",        count: 2, name: "The U-Turn",         cost: 1 },
-      { id: "urban_explorer",count: 1, name: "The Urban Explorer", cost: 2 },
-      { id: "spotty_memory", count: 2, name: "Spotty Memory",      cost: 1 },
-      { id: "drained_brain", count: 1, name: "The Drained Brain",  cost: 0 },
-      { id: "overflowing",   count: 2, name: "The Overflowing Chalice", cost: 1 },
-      { id: "travel_agent",  count: 2, name: "The Mediocre Travel Agent", cost: 0 },
-      { id: "hangman",       count: 2, name: "The Hidden Hangman", cost: 2 },
-      { id: "labyrinth",     count: 2, name: "The Labyrinth",      cost: 2 },
-      { id: "endless_tumble",count: 2, name: "The Endless Tumble", cost: 0 },
+      { id: "jammed_door",   count: 2, cost: 2 },
+      { id: "gamblers_feet", count: 2, cost: 1 },
+      { id: "right_turn",    count: 2, cost: 1 },
+      { id: "u_turn",        count: 2, cost: 1 },
+      { id: "urban_explorer",count: 1, cost: 2 },
+      { id: "spotty_memory", count: 2, cost: 1 },
+      { id: "drained_brain", count: 1, cost: 0 },
+      { id: "overflowing",   count: 2, cost: 1 },
+      { id: "travel_agent",  count: 2, cost: 0 },
+      { id: "hangman",       count: 2, cost: 2 },
+      { id: "labyrinth",     count: 2, cost: 2 },
+      { id: "endless_tumble",count: 2, cost: 0 },
     ],
   },
 };
 
+// The two hider personalities. Names and descriptions are in js/i18n.js
+// under `diff.<id>.name` / `.hint`; what is a rule is only which ids exist.
 export const DIFFICULTY = {
-  fair:     { id: "fair",     name: "Fair",     hint: "The hider commits to a station before you start and answers honestly." },
-  devious:  { id: "devious",  name: "Devious",  hint: "The hider does not commit. Every answer is truthful for some station still standing — they just pick the one that helps you least." },
+  fair:    { id: "fair" },
+  devious: { id: "devious" },
 };
+
+// Whether the hider deck is in play. `false` is the pure-deduction game: no
+// draws, no time bonuses, no veto, no curses, so the score is exactly the
+// minutes the seeker spent. Nothing about the questions, the travel model or
+// the candidate set changes with it -- see `cards` in js/game.js.
+export const CARDS_DEFAULT = true;

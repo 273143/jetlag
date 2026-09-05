@@ -21,6 +21,7 @@ file you edit is live on the next reload.
 | 5 | [The hider](#5-the-hider) | `js/hider.js` | change where the hider hides or how it plays cards |
 | 6 | [Rounds and matches](#6-rounds-and-matches) | `js/match.js`, `js/hidephase.js` | change the two-player flow, handovers, standings |
 | 7 | [Presentation](#7-presentation) | `js/ui.js`, `js/map.js`, `index.html`, `css/style.css` | change the panel, the map, the sheets, the styling |
+| 7b | [Words](#7b-words) | `js/i18n.js` | change any wording, or add a language |
 | 8 | [Bootstrap](#8-bootstrap) | `js/main.js` | change the start screen, URL params, round wiring |
 | 9 | [Offline and install](#9-offline-and-install) | `sw.js`, `js/offline.js`, `js/wakelock.js`, `manifest.webmanifest` | change caching, tile packs, the screen lock, the PWA |
 | 10 | [Tooling](#10-tooling) | `tools/*` | rebuild a map, measure a constant, run the tests |
@@ -68,9 +69,11 @@ are *linear* features baked at build time (`raw.linears`) because
 nearest-point-on-a-river is not nearest-to-its-centroid — they arrive in the
 same shape, so every question type works on them unchanged.
 
-**`js/geo.js`** is pure helpers: `haversine`, `nearest`, `within`, `formatKm`,
-`formatDuration` (minutes → `1h 05m`), `formatClock` (minutes since midnight →
-`08:40`).
+**`js/geo.js`** is pure helpers: `haversine`, `nearest`, `within`, `formatKm`
+(`3,2 km` / `3.2 km`), `formatDuration` (minutes → `1 h 05 min` / `1h 05m`),
+`formatClock` (minutes since midnight → `08:40`). The first two read their
+punctuation from the dictionary, which is the only thing the language decides
+about a number.
 
 ## 2. Travel
 
@@ -78,7 +81,7 @@ Two models, chosen by whether the map declares a `headway` in `RULES`:
 
 | Map | Model | Entry point |
 | --- | --- | --- |
-| Brno | timetabled: one ride on one line, with real waits | `timetableTimes`, `boardAt` in `js/timetable.js` |
+| Brno | timetabled: real departures, real waits, real changes | `timetableTimes`, `boardAt` in `js/timetable.js` |
 | South Moravia | line-aware shortest path with a transfer penalty | `travelTimes` in `js/data.js` |
 
 **`js/timetable.js`.** The whole schedule is one number per mode: a line runs
@@ -91,15 +94,34 @@ convenience, but what guarantees the graph is never a trap (some terminal loops
 are served only in the arriving direction).
 
 `timetableTimes(world, from, clock)` is that same board search run to
-exhaustion, so the estimate the map shows and the price the board charges are
+exhaustion, so the estimate the map shows and the price a journey charges are
 the same arithmetic. Both maps' functions return the same interface:
 `{ minutes: Float64Array, pathTo(id), lineTo(id) }`, plus `legs(id)` on the
 timetabled one.
 
+**A move is a whole journey.** It used to be one ride on one line: clicking a
+stop off your line was refused with "ride to an interchange first", and the
+seeker hand-routed the network a leg at a time. The cost model is unchanged --
+`timetableTimes` was always time-dependent, so the engine's itinerary is priced
+exactly as the leg-by-leg version was -- but the connecting is done for you.
+`journey(state, toId)` in `js/game.js` returns that itinerary with the wait and
+the time on board kept apart, and `journeyLegs` in `js/timetable.js` does the
+passenger arithmetic; every screen that offers a journey shows the split, which
+is the part the old restriction taught for free.
+
+**`state.travel` is a view, not a field.** It is defined as a getter that
+recomputes whenever the clock or the seeker moves. Every departure in it is
+relative to the clock, and the clock moves for asking a question and for losing
+a hangman guess as well as for travelling -- while it was only the map's
+estimate a stale copy was merely optimistic; now that it sets the price, it
+would quote trams that had already gone.
+
 ## 3. Rules and content
 
 **`js/rules.js`** — *every tunable number in the game, with the reasoning
-attached*. This is the most important file to read before changing balance.
+attached*. Numbers only: what a POI category is called, what a curse is
+called, what a difficulty is called all live in `js/i18n.js` now, keyed by the
+id that stays here. This is the most important file to read before changing balance.
 Top-level: `startClock`, `searchMinutes`, `handLimit`, `hiding`, `askMinutes`,
 `draw`, `zoneKm`, `deck`, and `maps`. Per map under `maps[id]`:
 `hidingMinutes`, `hidingChoices`, `radarKm`, `thermometerKm`,
@@ -124,6 +146,9 @@ built from the per-map lists above. Every question is one object:
 
 `ctx` is `{ seeker }`, plus `{ from, to }` for a thermometer. Six categories:
 `matching`, `measuring`, `radar`, `thermometer`, `tentacles`, `photo`.
+`buildQuestions` runs per round, which is what lets the texts come out of the
+dictionary in whichever language the start screen chose; `CATEGORIES` is a list
+of ids only, because it is evaluated at import time, before there is a choice.
 
 `applyQuestion` answers from the hider and filters in one step;
 `filterByAnswer` keeps only stations whose `ask` produced the same value. **The
@@ -162,6 +187,7 @@ choice of hiding place. If too few stops are inside it the window widens (see
 ```js
 state = {
   world, questions, difficulty, seed, rng,
+  cards,                       // false is the deck-free, pure-deduction game
   seekerId, startId, previousStation,
   hiding: { reach, minutes, asked, widened, stops },
   clock,                       // minutes elapsed; the score
@@ -169,7 +195,7 @@ state = {
   checked: Set<id>,            // stops physically searched
   asked: Map<qid, times>, bannedQuestions: Set<qid>,
   effects, challenge, pendingThermo,
-  travel,                      // reachFrom(state) for the current clock
+  travel,                      // getter: reachFrom(state) at the clock as it is now
   log: [{ who, text, clock, … }],   // who: system | seeker | hider | curse
   status: "playing" | "found",
   hider,                       // the Hider instance
@@ -184,11 +210,20 @@ Actions, all of which return `{ ok, … }` and refuse rather than throw:
 | `travel(state, toId)` | charges the journey, moves, searches the stop, ends the run if the hider is there |
 | `challengeStep(state, input)` | one letter / one throw / one step of a curse minigame |
 | `askBlocker` / `travelBlocker` | why this is not allowed right now, or `null` — the UI disables buttons with these |
-| `board`, `directRide`, `nextHop`, `reachFrom` | travel queries the UI needs |
-| `finalScore(state)` | `{ elapsed, bonus, total }` — the hider's score |
+| `board`, `journey`, `reachFrom` | travel queries the UI needs |
+| `finalScore(state)` | `{ elapsed, bonus, total }` — the hider's score; `bonus` is always 0 with cards off |
 
-`nextHop` matters on a timetabled map: "go to that station" is a *plan*, and
-one move is one ride, so the UI turns a far-away click into the first leg.
+`journey(state, toId)` is what a click on a distant stop buys: `{ minutes,
+onboard, wait, changes, stops, lines, legs, timetabled }`. `travel` charges
+`minutes` and the UI shows the rest.
+
+**Cards off.** `newGame(world, { cards: false })` is the pure-deduction game.
+Everything about the questions, the candidate set, the hiding window and travel
+is untouched; what goes away is the hider's deck, and with it the draws, the
+veto, Randomize, Move, the time bonuses and every curse. `hiderDraws`,
+`maybePowerups` and `maybeCurse` each return early on the flag, and `Hider`
+never builds a deck — both sides, so neither depends on the other noticing.
+The score becomes the clock exactly.
 
 ## 5. The hider
 
@@ -254,7 +289,11 @@ the ride confirmation, the three curse minigames, the result — and
 `showMatchResult`, which adds standings and the handover. `dispose()` must be
 called before a new round's UI takes over (it drops the labyrinth key handler).
 `esc()` lives here and is the only HTML escaper — use it for anything
-interpolated.
+interpolated, including anything going into a `t()` template.
+
+`journeyHtml(plan)` is the itinerary — the wait/ride split and one row per leg
+— and is shared by the map popup and the confirmation sheet, so the number on
+the button is always the sum of the rows under it.
 
 **`js/map.js`** — Leaflet. One `GameMap` for the whole session; rounds reuse
 it.
@@ -277,6 +316,38 @@ The palette is read from CSS custom properties once, so colours stay in
 `#handoff`, `#modal`, `#start`. Everything inside is filled in by JS; nothing
 is templated.
 
+## 7b. Words
+
+**`js/i18n.js`** holds every user-facing string, in Czech and English, in one
+file with the two dictionaries side by side. Czech is the default; English is
+kept because the rulebook this implements is published in English, and a
+wording that has drifted from the book shows up on that side.
+
+```js
+t("log.travel", { name: esc(dest.name), n: 3 })   // values arrive escaped
+```
+
+Placeholders are `{name}` for a value and `{name:a|b|c}` for a form chosen by
+it. The chooser does double duty, which is what keeps Czech readable with no
+plural library: a number picks 1 / 2-4 / 5+ in Czech and 1 / other in English
+(the arity of the list says which), and `"m"`/`"f"`/`"n"` picks a grammatical
+gender. Gender is why a POI category carries `poi.<cat>.one`, `.many` and `.g`
+rather than a bare label: "is your nearest X the same as mine?" is one sentence
+in English and three in Czech, and the question templates are written to keep
+every label in the nominative so no case table is needed.
+
+`applyStatic()` fills the shell from `data-i18n`, `data-i18n-html` and
+`data-i18n-ph` attributes in `index.html`. `initLang(param)` picks the language
+— `?lang=` first, then what was chosen last time, then an outright English
+browser preference, then Czech — and the start screen's picker calls `setLang`
+and repaints. The language is fixed for the length of a round: log entries are
+worded when they happen.
+
+`tools/i18ncheck.js` runs first in `tools/test.sh` and fails the build if the
+two dictionaries diverge, if a key the code asks for is missing, if a key
+nobody asks for is left behind, or if a `{value}` exists on one side only.
+Missing text is silent at run time, which is exactly why it is checked here.
+
 ## 8. Bootstrap
 
 **`js/main.js`** wires it together: map picker, players picker, hider picker,
@@ -289,10 +360,10 @@ start() → playRound() → [handoff → hidePhase → reset → handoff] → ne
 ```
 
 URL parameters: `?map=`, `?seed=`, `?hider=fair|devious`, `?hiding=<minutes>`,
-`?players=2`, `?go=1` (start immediately), `?fresh=1` (unregister the service
-worker and empty the app cache). `window.__debug` is set every round —
-`{ phase, state, ui, gmap, match, start, range, ask, travel, … }` — and is what
-the UI tests drive.
+`?players=2`, `?lang=cs|en`, `?cards=0` (the deck-free game), `?go=1` (start
+immediately), `?fresh=1` (unregister the service worker and empty the app
+cache). `window.__debug` is set every round — `{ phase, state, ui, gmap, match,
+start, range, ask, travel, journey, … }` — and is what the UI tests drive.
 
 ## 9. Offline and install
 
@@ -322,8 +393,9 @@ best-effort -- unsupported or refused changes nothing about the game.
 | Command | What it does |
 | --- | --- |
 | `./run.sh` | serve on :8080 |
-| `./tools/test.sh` | 60 automated runs, invariants, and what actually fired |
-| `./tools/uitest.sh` | drives the real UI: a full run and a full two-player match per map, then the offline nag and the phone-sized layout |
+| `./tools/test.sh` | the dictionary check, then 60 automated runs, invariants, and what actually fired |
+| `node tools/i18ncheck.js` | the two dictionaries against each other and against the code |
+| `./tools/uitest.sh` | drives the real UI: a full run per map, one with cards off, one in English, a full two-player match per map, then the offline nag and the phone-sized layout |
 | `./tools/shot.sh 'index.html?go=1' out.png` | headless screenshot, for looking at the UI without a display |
 | `python3 tools/build_map.py all` | rebuild `data/*.json` from OpenStreetMap |
 | `python3 tools/survey_pois.py brno` | score candidate POI categories as questions |
@@ -341,7 +413,11 @@ that serve the directory and point headless Chromium at them, sharing
 `.cache/overpass/`, so a rebuild does not re-hammer the API).
 
 Each browser run gets a throwaway Chromium profile — with a shared one the module cache served stale JavaScript and a run
-once passed against a function that did not exist.
+once passed against a function that did not exist. `tools/lib.sh` finds
+whichever name Chromium goes by on the machine (`chromium-browser`,
+`chromium`, `google-chrome`…), or honours `CHROME=/path/to/it`; hardcoding one
+meant the suite silently did not run at all on the other, which looks exactly
+like it passing.
 
 ---
 
@@ -387,12 +463,19 @@ game.ask(state, q)                 game.travel(state, id)
 7. **Nothing on screen at a handover may reveal the hiding place** — text, map
    zoom, an open popup or an open Leaflet tooltip. `gmap.reset()` before the
    handover, and `tools/2ptest.html` asserts it.
-8. **Numbers live in `js/rules.js`** with the measurement that produced them.
+8. **Numbers live in `js/rules.js`** with the measurement that produced them,
+   and **words live in `js/i18n.js`**, in both languages, checked by
+   `tools/i18ncheck.js`.
+9. **A journey's `wait` and `onboard` sum to what it charges.** The seeker
+   decides on the split as much as on the total; a split that did not add up
+   would be a lie nothing else in the game would notice. Asserted by
+   `tools/test.sh`.
 
 ## Where do I change X?
 
 | I want to… | Change |
 | --- | --- |
+| change any wording, or add a language | `js/i18n.js` — then `node tools/i18ncheck.js` |
 | retune a question's price or card cost | `RULES.askMinutes`, `RULES.draw` |
 | change a radar / thermometer / tentacles radius | `RULES.maps[id]` — and re-measure with `tools/tune_tentacles.py` |
 | change the hiding window | `RULES.maps[id].hidingMinutes` / `.hidingChoices`; the floor is `RULES.hiding` |
@@ -402,6 +485,8 @@ game.ask(state, q)                 game.travel(state, id)
 | change how the hider chooses a hiding place | `Hider.chooseStation` |
 | change how the hider plays cards | `cardValue` in `js/deck.js`, and the `wants*` methods in `js/hider.js` |
 | change journey cost or departures | `js/timetable.js` (Brno) or `travelTimes` in `js/data.js` (region) |
+| change what a journey shows before it is paid for | `journey` in `js/game.js`, `journeyHtml` in `js/ui.js` |
+| change what the deck-free game removes | the `cards` guards in `js/game.js` and `js/hider.js` |
 | change the map's colours or dots | `js/map.js` + the custom properties in `css/style.css` |
 | change the panel, sheets or wording | `js/ui.js` |
 | change the round or match flow | `js/main.js`, `js/match.js`, `js/hidephase.js` |
@@ -438,8 +523,10 @@ game.ask(state, q)                 game.travel(state, id)
   the `measure_hub` question. Rounds start at `randomStart`.
 - **`degree` vs `lines.length`.** `degree` is graph edges; `lines` is transit
   lines serving the stop. Both are baked, and they mean different things.
-- **A move is one ride on one line** on a timetabled map. Anything that wants to
-  "go to station X" must go through `nextHop`.
+- **A journey is priced when it is offered and charged when it is taken**, and
+  both read `state.travel`, which is a getter tied to the clock. Anything that
+  moves the clock without going through `charge` will quote departures that
+  have already left.
 - **The hider's `Move` powerup can put them outside the hiding window**, so the
   "everyone is inside the window" check only holds at round start.
 - Tests take about a minute each; `uitest.sh` runs four browser sessions.

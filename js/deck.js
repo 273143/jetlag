@@ -1,4 +1,8 @@
 // The hider deck: time bonuses, powerups and curses.
+//
+// A card is its kind, its id and its cost -- no words. Nothing here is ever
+// shown to a player as itself; what reaches the log is a sentence built in
+// game.js from `card.<id>.name` in the dictionary.
 
 import { RULES } from "./rules.js";
 
@@ -7,14 +11,13 @@ export function buildDeck(rng) {
   let uid = 0;
   for (const t of RULES.deck.timeBonus)
     for (let i = 0; i < t.count; i++)
-      cards.push({ uid: uid++, kind: "time", minutes: t.minutes, name: `+${t.minutes} min`,
-                   text: "Counts toward the hider's final time, but only if still in hand at the end." });
+      cards.push({ uid: uid++, kind: "time", minutes: t.minutes });
   for (const p of RULES.deck.powerups)
     for (let i = 0; i < p.count; i++)
-      cards.push({ uid: uid++, kind: "powerup", id: p.id, name: p.name, text: p.text });
+      cards.push({ uid: uid++, kind: "powerup", id: p.id });
   for (const c of RULES.deck.curses)
     for (let i = 0; i < c.count; i++)
-      cards.push({ uid: uid++, kind: "curse", id: c.id, name: c.name, cost: c.cost });
+      cards.push({ uid: uid++, kind: "curse", id: c.id, cost: c.cost });
   return shuffle(cards, rng);
 }
 

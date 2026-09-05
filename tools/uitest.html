@@ -8,10 +8,22 @@ iframe{width:1400px;height:820px;border:0;display:block}
 <body>
 <div id="out">driving…</div>
 <iframe id="f"></iframe>
-<script>
+<script type="module">
 // Drives the real UI through a whole run by clicking real buttons, so the
 // rendering paths (question list, photo embeds, travel popup, result sheet)
 // are exercised rather than just the engine underneath them.
+//
+// Assertions on what is on screen go through the dictionary rather than
+// through English literals: the interface has two languages now, and a test
+// that matched "the hider's score" would pass only by accident and only in
+// one of them. tools/uitest.sh runs this once per map, and once more in
+// English, so both halves of js/i18n.js are exercised in the real UI.
+import { t, setLang } from "../js/i18n.js";
+
+const params = new URLSearchParams(location.search);
+const LANG = params.get("lang") || "cs";
+setLang(LANG);
+
 const out = document.getElementById("out");
 const lines = [];
 const log = (s) => { lines.push(s); out.textContent = lines.join("\n"); console.log(s); };
@@ -55,9 +67,11 @@ async function clearChallenges(w, ui, state) {
 }
 
 const f = document.getElementById("f");
-// tools/uitest.sh runs this once per map.
-const MAP = new URLSearchParams(location.search).get("map") || "south-moravia";
-f.src = `../index.html?map=${MAP}&seed=7&hider=fair&go=1`;
+// tools/uitest.sh runs this once per map, and once with cards=0.
+const MAP = params.get("map") || "south-moravia";
+const CARDS = params.get("cards") !== "0";
+f.src = `../index.html?map=${MAP}&seed=7&hider=fair&lang=${LANG}` +
+        `&cards=${CARDS ? 1 : 0}&go=1`;
 f.addEventListener("load", async () => {
   const w = f.contentWindow, d = f.contentDocument;
   for (let i = 0; i < 60 && !w.__debug; i++) await sleep(200);
@@ -119,11 +133,13 @@ f.addEventListener("load", async () => {
     check(svcs.length > 0, `departure board listed ${svcs.length} service(s)`);
     check(rows.length > 0, `board offered ${rows.length} reachable stop(s)`);
     const times = [...d.querySelectorAll("#sheet .svc .next")].map((n) => n.textContent);
-    check(times.some((t) => /\d\d?:\d\d/.test(t)), "board showed real departure times");
+    check(times.some((x) => /\d\d?:\d\d/.test(x)), "board showed real departure times");
     const row = [...rows].find((r) => !r.disabled);
     if (row) {
       row.click(); await sleep(80);                       // -> confirm screen
       check(!!d.querySelector("#sheet .ticket"), "choosing a stop asked to confirm");
+      check(!!d.querySelector("#sheet .jsplit"),
+            "the ticket splits the journey into moving and waiting");
       const clockBefore = state.clock, whereBefore = state.seekerId;
       d.querySelector("#sheet .btn.go").click(); await sleep(120);
       check(state.clock > clockBefore, `confirming rode the vehicle (${Math.round(state.clock - clockBefore)}m)`);
@@ -134,19 +150,33 @@ f.addEventListener("load", async () => {
     log("ok: no timetable on this map, board not offered");
   }
 
-  // Travel via the real map popup.
+  // Travel via the real map popup. The stop deliberately picked is the
+  // *furthest* candidate: the whole point of the change is that somewhere no
+  // single line reaches is now one click away, and the popup has to carry the
+  // itinerary that justifies the price on its button.
   await clearChallenges(w, ui, state);
-  const target = state.candidates.find((s) => s.id !== state.seekerId);
+  const reach = state.travel.minutes;
+  const target = state.candidates
+    .filter((c) => c.id !== state.seekerId && isFinite(reach[c.id]))
+    .sort((a, b) => reach[b.id] - reach[a.id])[0];
+  const plan = w.__debug.journey(state, target.id);
   w.__debug.gmap.markers.get(target.id).fire("click"); await sleep(120);
   const btn = d.querySelector(".leaflet-popup-content .travel");
   check(!!btn, "station popup offered a travel button");
+  check(!!d.querySelector(".leaflet-popup-content .jsplit"),
+        "the popup splits the journey into moving and waiting");
+  if (plan.timetabled) {
+    check(d.querySelectorAll(".leaflet-popup-content .jlegs li").length === plan.legs.length,
+          `the popup lists all ${plan.legs.length} leg(s) of the journey`);
+    check(plan.changes > 0, `the furthest candidate needs ${plan.changes} change(s), and is still one click`);
+  }
+  check(Math.abs(plan.onboard + plan.wait - plan.minutes) < 1e-6,
+        `the split adds up (${Math.round(plan.onboard)}m + ${Math.round(plan.wait)}m = ${Math.round(plan.minutes)}m)`);
   const before = state.clock, whereWas = state.seekerId;
   if (btn && !btn.disabled) { btn.click(); await sleep(120); }
   check(state.clock > before, `travelling advanced the clock (${Math.round(state.clock - before)}m)`);
-  // On a timetabled map the popup offers the first leg of the journey rather
-  // than the whole thing, so arriving at the target in one click is only one
-  // of the right answers.
-  check(state.seekerId !== whereWas || state.status === "found", "seeker actually moved");
+  check(state.seekerId === target.id || state.status === "found",
+        "one click took the seeker the whole way, changes and all");
 
   // Run it out to the end, obeying whatever the hider throws at us.
   for (let i = 0; i < 400 && state.status === "playing"; i++) {
@@ -154,10 +184,8 @@ f.addEventListener("load", async () => {
     const forced = state.effects.forcedReturn ?? state.effects.mustVisit;
     const goal = forced != null ? forced
       : (state.candidates[0] ?? state.world.stations[0]).id;
-    // One line at a time, so head for the goal a leg at a time.
-    const next = w.__debug.nextHop(state, goal) ?? goal;
-    if (next === state.seekerId && goal !== state.seekerId) break;
-    w.__debug.travel(state, next);
+    if (goal === state.seekerId) break;
+    w.__debug.travel(state, goal);
     ui.refresh();
   }
   check(state.status === "found",
@@ -166,7 +194,20 @@ f.addEventListener("load", async () => {
   await sleep(200);
   check(!d.getElementById("modal").hidden, "the result sheet opened");
   const sheet = d.getElementById("sheet").textContent;
-  check(/hider's score/.test(sheet), "result sheet shows a score");
+  check(sheet.includes(t(CARDS ? "res.total" : "res.totalNoCards")),
+        `result sheet shows a score, in ${LANG}`);
+
+  // With the deck out of play nothing card-shaped may have appeared all run,
+  // on screen or in the log. An empty hand would look the same from outside,
+  // so the panel's own card counter is checked as well as the entries.
+  if (!CARDS) {
+    check(d.getElementById("handstat").hidden, "no hider-card counter in the panel");
+    check(d.querySelectorAll("#log .entry.curse").length === 0, "no curse ever landed");
+    check(state.hider.hand.length === 0 && state.hider.deck.length === 0, "no deck was built");
+    check(!/\+\d+m/.test(sheet), "the result sheet quotes no time bonus");
+  } else {
+    check(!d.getElementById("handstat").hidden, "the panel counts the hider's cards");
+  }
   done();
 });
 

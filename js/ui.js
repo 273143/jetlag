@@ -1,10 +1,16 @@
 // Rendering and input. Holds no game rules; it reads state and calls game.js.
 
-import { CATEGORIES } from "./questions.js";
+import { CATEGORIES, categoryName, categoryBlurb } from "./questions.js";
 import { RULES } from "./rules.js";
 import { formatDuration, formatClock } from "./geo.js";
 import { makePhoto } from "./map.js";
-import { askBlocker, travelBlocker, repeatMultiplier, finalScore, seeker, board, directRide, nextHop } from "./game.js";
+import { askBlocker, travelBlocker, finalScore, seeker, board, journey } from "./game.js";
+import { t, has } from "./i18n.js";
+
+/** What to call a vehicle. The mode is a data word -- "trolleybus" -- and
+ *  anything the dictionary does not know is printed as it came off the map
+ *  rather than as a missing key. */
+const modeName = (mode) => (has(`transit.${mode}`) ? t(`transit.${mode}`) : mode);
 
 const $ = (id) => document.getElementById(id);
 
@@ -33,10 +39,17 @@ export class UI {
     // The head start belongs here rather than buried in the log: every
     // candidate on the map is on it because of that number.
     $("mode").textContent = match
-      ? `Round ${match.round} · ${match.seekerName} seeking ${match.hiderName} · ` +
-        `${formatDuration(state.hiding.minutes)} head start`
-      : `${state.world.name} · ${state.difficulty} hider · ` +
-        `${formatDuration(state.hiding.minutes)} head start · seed ${state.seed}`;
+      ? t("ui.modeMatch", {
+          round: match.round, seeker: match.seekerName, hider: match.hiderName,
+          window: formatDuration(state.hiding.minutes),
+        })
+      : t("ui.modeSolo", {
+          map: t(`map.${state.world.id}.name`), diff: t(`diff.${state.difficulty}.name`),
+          window: formatDuration(state.hiding.minutes), seed: state.seed,
+        });
+    // With no deck there is no hand to count, and a stat stuck on zero all
+    // round is worse than no stat at all.
+    $("handstat").hidden = !state.cards;
     // A match reuses the panel across rounds, so the last round's log has to
     // go with it -- the entry counter starts at zero either way.
     $("log").innerHTML = "";
@@ -61,7 +74,7 @@ export class UI {
   buildPaneTabs() {
     const nav = $("pane");
     nav.innerHTML = "";
-    for (const [id, name] of [["ask", "Ask"], ["log", "Answers"]]) {
+    for (const [id, name] of [["ask", t("pane.ask")], ["log", t("pane.log")]]) {
       const b = document.createElement("button");
       b.dataset.pane = id;
       b.innerHTML = `<span>${name}</span><i></i>`;
@@ -86,11 +99,11 @@ export class UI {
   buildCategoryTabs() {
     const nav = $("cats");
     nav.innerHTML = "";
-    for (const c of CATEGORIES) {
+    for (const id of CATEGORIES) {
       const b = document.createElement("button");
-      b.textContent = c.name;
-      b.dataset.cat = c.id;
-      b.addEventListener("click", () => { this.cat = c.id; this.refresh(); });
+      b.textContent = categoryName(id);
+      b.dataset.cat = id;
+      b.addEventListener("click", () => { this.cat = id; this.refresh(); });
       nav.append(b);
     }
   }
@@ -104,14 +117,17 @@ export class UI {
     const me = seeker(s);
     const lines = s.world.lineNames(me.lines ?? []);
     $("here").innerHTML =
-      `You are at <b>${esc(me.name)}</b>` +
+      t("ui.here", { name: esc(me.name) }) +
       (lines.length ? ` <span class="lines">${lines.map((l) => `<i>${esc(l)}</i>`).join("")}</span>` : "") +
-      `<br>${[me.district, me.municipality, `${Math.round(me.ele)} m`].filter(Boolean).map(esc).join(" · ")}` +
-      ` · local time ${formatClock(RULES.startClock + s.clock)}`;
+      "<br>" + t("ui.hereMeta", {
+        bits: [me.district, me.municipality, `${Math.round(me.ele)} m`]
+          .filter(Boolean).map(esc).join(" · "),
+        clock: formatClock(RULES.startClock + s.clock),
+      });
     if (board(s)) {
       const b = document.createElement("button");
       b.className = "departures";
-      b.textContent = "Departures";
+      b.textContent = t("ui.departures");
       b.addEventListener("click", () => this.showBoard());
       $("here").append(b);
     }
@@ -129,18 +145,19 @@ export class UI {
     const s = this.state, e = s.effects, out = [];
     if (s.pendingThermo) {
       const from = s.world.byId.get(s.pendingThermo.fromId);
-      out.push(`Thermometer running: travel ${s.pendingThermo.km} km from ${esc(from.name)} to read it.`);
+      out.push(t("fx.thermo", { km: s.pendingThermo.km, name: esc(from.name) }));
     }
-    if (e.jammedDoors > 0) out.push(`The Jammed Door: ${e.jammedDoors} more station(s) to force open.`);
-    if (e.slowLegs > 0) out.push(`The Gambler's Feet: next ${e.slowLegs} journey(s) 50% longer.`);
-    if (e.longWay > 0) out.push(`The Right Turn: next journey 40% longer.`);
-    if (e.forcedReturn != null) out.push(`The U-Turn: go back to ${esc(s.world.byId.get(e.forcedReturn).name)}.`);
-    if (e.mustVisit != null) out.push(`Travel agent: visit ${esc(s.world.byId.get(e.mustVisit).name)} before asking again.`);
-    if (e.noRepeatAsk) out.push(`The Urban Explorer: never two questions from one station.`);
-    if (e.blockedCategory) out.push(`Spotty Memory: no ${e.blockedCategory.cat} questions for ${e.blockedCategory.questions} more.`);
-    if (e.chalice > 0) out.push(`The Overflowing Chalice: hider draws extra ${e.chalice} more time(s).`);
-    if (s.bannedQuestions.size) out.push(`The Drained Brain: ${s.bannedQuestions.size} question(s) wiped for good.`);
-    $("effects").innerHTML = out.map((t) => `<div class="effect">${t}</div>`).join("");
+    if (e.jammedDoors > 0) out.push(t("fx.jammed", { n: e.jammedDoors }));
+    if (e.slowLegs > 0) out.push(t("fx.slow", { n: e.slowLegs }));
+    if (e.longWay > 0) out.push(t("fx.long"));
+    if (e.forcedReturn != null) out.push(t("fx.return", { name: esc(s.world.byId.get(e.forcedReturn).name) }));
+    if (e.mustVisit != null) out.push(t("fx.mustVisit", { name: esc(s.world.byId.get(e.mustVisit).name) }));
+    if (e.noRepeatAsk) out.push(t("fx.noRepeat"));
+    if (e.blockedCategory) out.push(t("fx.blocked", {
+      cat: categoryName(e.blockedCategory.cat), n: e.blockedCategory.questions }));
+    if (e.chalice > 0) out.push(t("fx.chalice", { n: e.chalice }));
+    if (s.bannedQuestions.size) out.push(t("fx.banned", { n: s.bannedQuestions.size }));
+    $("effects").innerHTML = out.map((line) => `<div class="effect">${line}</div>`).join("");
   }
 
   renderQuestions() {
@@ -149,11 +166,12 @@ export class UI {
     box.innerHTML = "";
     for (const b of $("cats").children) b.setAttribute("aria-selected", String(b.dataset.cat === this.cat));
 
-    const meta = CATEGORIES.find((c) => c.id === this.cat);
     const blurb = document.createElement("div");
     blurb.className = "qblurb";
     const { draw, keep } = RULES.draw[this.cat];
-    blurb.textContent = `${meta.blurb} Costs you ${RULES.askMinutes[this.cat]} min; the hider draws ${draw}, keeps ${keep}.`;
+    blurb.textContent = s.cards
+      ? t("ui.qblurb", { blurb: categoryBlurb(this.cat), min: RULES.askMinutes[this.cat], draw, keep })
+      : t("ui.qblurbNoCards", { blurb: categoryBlurb(this.cat), min: RULES.askMinutes[this.cat] });
     box.append(blurb);
 
     // Everything a question can tell you, before you pay for it. A question
@@ -172,8 +190,10 @@ export class UI {
       const ctxText = q.context?.(ctx);
       b.innerHTML = `<span>${esc(q.text)}` +
         (ctxText ? `<i class="ctx">${esc(ctxText)}</i>` : "") + `</span>` +
-        (times ? `<span class="rep">&times;${times + 1} cost</span>` : "") +
-        `<span class="cost">${RULES.askMinutes[q.cat]}m</span>`;
+        // Repeats cost the hider double, so the price rises only where there
+        // is a hider deck to charge it to.
+        (times && s.cards ? `<span class="rep">${esc(t("ui.repeat", { n: times + 1 }))}</span>` : "") +
+        `<span class="cost">${esc(t("ui.cost", { n: RULES.askMinutes[q.cat] }))}</span>`;
       const blocker = askBlocker(s, q);
       if (blocker) { b.disabled = true; b.title = blocker; }
       b.addEventListener("click", () => this.on.ask(q));
@@ -189,7 +209,7 @@ export class UI {
           if (d.open) this.openOptions.add(q.id); else this.openOptions.delete(q.id);
         });
         d.innerHTML =
-          `<summary>${list.length} possible answer${list.length === 1 ? "" : "s"}</summary>` +
+          `<summary>${esc(t("ui.options", { n: list.length }))}</summary>` +
           `<div class="olist">` +
           list.map((n) => `<i${n === mine ? ' class="mine"' : ""}>${esc(n)}</i>`).join("") +
           `</div>`;
@@ -211,14 +231,14 @@ export class UI {
       if (e.who === "hider" || e.who === "curse") pull = true;
       const div = document.createElement("div");
       div.className = `entry ${e.who}${e.found ? " found" : ""}`;
-      const t = `<span class="t">${formatDuration(e.clock)}</span>`;
+      const when = `<span class="t">${formatDuration(e.clock)}</span>`;
       if (e.who === "curse") {
-        div.innerHTML = `${t}<b>${esc(e.text.split(" — ")[0])}</b>` +
-          `<span class="fx">${esc(e.text.split(" — ")[1] ?? "")} ${esc(e.effect ?? "")}</span>`;
+        div.innerHTML = `${when}<b>${esc(e.text)}</b>` +
+          `<span class="fx">${esc(e.flavour ?? "")} ${esc(e.effect ?? "")}</span>`;
       } else {
-        div.innerHTML = t + esc(e.text) +
+        div.innerHTML = when + esc(e.text) +
           (e.context ? `<span class="ctx">(${esc(e.context)})</span>` : "") +
-          (e.cut > 0 ? `<span class="cut">${e.cut} station(s) ruled out</span>` : "");
+          (e.cut > 0 ? `<span class="cut">${esc(t("log.cut", { n: e.cut }))}</span>` : "");
       }
       log.append(div);
       if (e.photo) {
@@ -235,52 +255,88 @@ export class UI {
     this.setPane(pull ? "log" : this.pane);
   }
 
-  /** Popup shown when a station on the map is clicked. */
+  /**
+   * Popup shown when a station on the map is clicked: what it is, and the
+   * whole journey there.
+   *
+   * This is where the change of travel model shows. A move used to be one
+   * ride on one line, so a click on anything off that line came back with an
+   * estimate and an instruction -- "no service from here goes there, ride to
+   * an interchange first" -- and the seeker hand-routed the network a leg at
+   * a time. Now the button goes there, changes and all.
+   *
+   * What the restriction did give you for free was a running lesson in what a
+   * change costs, and it must not disappear with it. So the popup is the
+   * ticket as well as the button: the split into moving and waiting, how many
+   * changes, and every leg with its line, its departure and its wait.
+   */
   stationPopup(station) {
     const s = this.state;
-    const minutes = s.travel.minutes[station.id];
     const blocker = travelBlocker(s, station.id);
     const alive = s.candidates.some((c) => c.id === station.id);
+    const here = station.id === s.seekerId;
+    const plan = here ? null : journey(s, station.id);
     const el = document.createElement("div");
     const lines = s.world.lineNames(station.lines ?? []);
     el.innerHTML =
       `<b>${esc(station.name)}</b>` +
       (lines.length ? `<div class="lines">${lines.map((l) => `<i>${esc(l)}</i>`).join("")}</div>` : "") +
       `<div class="meta">${[station.district, `${Math.round(station.ele)} m`].filter(Boolean).map(esc).join(" · ")}` +
-      ` · ${alive ? "still possible" : s.checked.has(station.id) ? "searched" : "ruled out"}</div>`;
+      ` · ${esc(alive ? t("pop.possible") : s.checked.has(station.id) ? t("pop.searched") : t("pop.out"))}</div>` +
+      (plan ? this.journeyHtml(plan) : "");
+
     const btn = document.createElement("button");
     btn.className = "travel";
-    const direct = station.id === s.seekerId ? null : directRide(s, station.id);
-    // Somewhere no single line reaches is still somewhere you can set off
-    // for: the button becomes the first leg, and the popup says how much of
-    // the journey that is.
-    const hopId = blocker && !direct ? nextHop(s, station.id) : null;
-    const hop = hopId != null && hopId !== station.id ? s.world.byId.get(hopId) : null;
-    const hopRide = hop ? directRide(s, hop.id) : null;
-
-    btn.textContent = station.id === s.seekerId
+    btn.textContent = here
       // You can be standing on a live candidate again after the hider plays
       // Move; searching where you stand costs the search time, not a journey.
-      ? `Search here — ${formatDuration(RULES.searchMinutes)}`
-      : direct
-        ? `${direct.entry.walk ? "Walk" : `Ride ${direct.entry.ref}`} here — ${formatDuration(direct.cost.minutes)}`
-        : hop && hopRide
-          ? `First leg: ${hopRide.entry.walk ? "walk" : hopRide.entry.ref} to ${hop.name} — ${formatDuration(hopRide.cost.minutes)}`
-          : isFinite(minutes)
-            ? `Travel here — ${formatDuration(minutes)}`
-            : "Unreachable";
-    if (hop && hopRide) {
-      el.querySelector(".meta").insertAdjacentHTML("afterend",
-        `<div class="meta">${formatDuration(minutes)} away in ` +
-        `${(s.travel.legs?.(station.id) ?? []).length} leg(s)</div>`);
-      btn.disabled = false;
-      btn.addEventListener("click", () => this.on.travel(hop));
-    } else {
-      if (blocker) { btn.disabled = true; btn.title = blocker; }
-      btn.addEventListener("click", () => this.on.travel(station));
-    }
+      ? t("pop.searchHere", { time: formatDuration(RULES.searchMinutes) })
+      : plan
+        ? t("pop.travel", { time: formatDuration(plan.minutes) })
+        : t("pop.unreachable");
+    if (blocker) { btn.disabled = true; btn.title = blocker; }
+    btn.addEventListener("click", () => this.on.travel(station));
     el.append(btn);
     return el;
+  }
+
+  /**
+   * The itinerary, as HTML: the totals split into moving and waiting, then
+   * one row per leg.
+   *
+   * Shared by the popup and the confirmation sheet because it is the same
+   * information in both, and because the number in the button has to be the
+   * sum of the rows underneath it or nobody will believe either.
+   */
+  journeyHtml(plan) {
+    const summary = plan.timetabled
+      ? (plan.changes > 0
+          ? t("jr.split", { ride: formatDuration(plan.onboard),
+                            wait: formatDuration(plan.wait), n: plan.changes })
+          : t("jr.splitDirect", { ride: formatDuration(plan.onboard),
+                                  wait: formatDuration(plan.wait) }))
+      : t("jr.plain", {
+          total: formatDuration(plan.minutes), n: plan.stops,
+          lines: plan.lines.length ? t("jr.plainLines", { lines: plan.lines.join(" → ") }) : "",
+        });
+
+    const rows = plan.legs.map((leg) => {
+      const to = this.state.world.byId.get(leg.toId);
+      const head = leg.walk
+        ? t("jr.legWalk", { to: esc(to.name) })
+        : t("jr.legRide", { mode: esc(modeName(leg.mode)), ref: esc(leg.ref), to: esc(to.name) });
+      const time = leg.walk
+        ? t("jr.legWalkTime", { onboard: formatDuration(leg.onboard) })
+        : t("jr.legTime", { clock: formatClock(RULES.startClock + leg.depart),
+                            onboard: formatDuration(leg.onboard) });
+      const wait = leg.wait > 0 ? t("jr.legWait", { wait: formatDuration(leg.wait) })
+                                : t("jr.legNoWait");
+      return `<li class="${leg.walk ? "onfoot" : leg.mode}"><b>${head}</b>` +
+             `<span>${esc(time)} · ${esc(wait)}</span></li>`;
+    }).join("");
+
+    return `<div class="jsplit">${esc(summary)}</div>` +
+           (rows ? `<ol class="jlegs">${rows}</ol>` : "");
   }
 
   /**
@@ -288,8 +344,14 @@ export class UI {
    *
    * One panel per line and direction: where it is heading, when the next
    * three leave, and every stop it serves from here with the time on board
-   * and the clock time you would arrive. Choosing a stop is choosing a
-   * journey, so it asks to confirm before the clock moves.
+   * and the clock time you would arrive.
+   *
+   * It is no longer the only way to travel -- any stop on the map is one tap
+   * away now -- but it is still the only way to see what is actually leaving
+   * from under your feet, which is how you decide whether waiting four
+   * minutes for the tram beats walking. Choosing a stop opens the same
+   * confirmation as the map does, and the journey it confirms is the fastest
+   * one, which for a stop on this line is this ride.
    */
   showBoard() {
     const s = this.state;
@@ -300,9 +362,8 @@ export class UI {
 
     this.openModal((sheet) => {
       sheet.innerHTML =
-        `<h2>Departures — ${esc(me.name)}</h2>` +
-        `<p class="sheetnote">${clockAt(s.clock)}. One ride, one line: to reach ` +
-        `anywhere else, get off at an interchange and board again.</p>`;
+        `<h2>${esc(t("board.title", { name: me.name }))}</h2>` +
+        `<p class="sheetnote">${esc(t("board.note", { clock: clockAt(s.clock) }))}</p>`;
 
       // A busy interchange has forty-seven services on it, so the board opens
       // the way a real one reads: every line and direction with its next
@@ -324,14 +385,15 @@ export class UI {
         if (worth) opened++;
         const sec = document.createElement("details");
         sec.className = "svc" + (e.walk ? " onfoot" : "") + (live ? " worth" : "");
+        const alive_ = live ? `<b>${esc(t("board.live", { n: live }))}</b>` : "";
         sec.innerHTML = e.walk
-          ? `<summary><span class="mode walk">on foot</span> ${e.stops.length} stop(s) you can walk to` +
-            (live ? `<b>${live} still possible</b>` : "") + `</summary>`
-          : `<summary><span class="mode ${e.mode}">${esc(e.mode)} ${esc(e.ref)}</span>` +
-            `<span class="tw">towards ${esc(e.towards)}</span>` +
+          ? `<summary><span class="mode walk">${esc(t("board.onfoot"))}</span> ` +
+            `${esc(t("board.walkTo", { n: e.stops.length }))}` + alive_ + `</summary>`
+          : `<summary><span class="mode ${e.mode}">${esc(modeName(e.mode))} ${esc(e.ref)}</span>` +
+            `<span class="tw">${esc(t("board.towards", { name: e.towards }))}</span>` +
             `<span class="next">${e.departures.map(clockAt).join(" · ")}</span>` +
-            (e.reversed ? `<i>return working</i>` : "") +
-            (live ? `<b>${live} still possible</b>` : "") + `</summary>`;
+            (e.reversed ? `<i>${esc(t("board.return"))}</i>` : "") +
+            alive_ + `</summary>`;
 
         const list = document.createElement("div");
         list.className = "stoplist";
@@ -349,9 +411,7 @@ export class UI {
             `<span class="arr">${clockAt(s.clock + cost.minutes)}</span>`;
           const blocker = travelBlocker(s, stop.id);
           if (blocker) { row.disabled = true; row.title = blocker; }
-          row.addEventListener("click", () => {
-            this.confirmRide(e, stop, st, cost);
-          });
+          row.addEventListener("click", () => this.confirmJourney(st));
           list.append(row);
         }
         sec.append(list);
@@ -361,35 +421,33 @@ export class UI {
 
       const close = document.createElement("button");
       close.className = "btn";
-      close.textContent = "Stay here";
+      close.textContent = t("board.stay");
       close.addEventListener("click", () => this.closeModal());
       sheet.append(close);
     });
   }
 
-  /** Confirm one ride before it costs anything. */
-  confirmRide(entry, stop, station, cost) {
+  /** The whole journey somewhere, before it costs anything. */
+  confirmJourney(station) {
     const s = this.state;
-    const clockAt = (m) => formatClock(RULES.startClock + m);
+    const plan = journey(s, station.id);
+    if (!plan) return;
     this.openModal((sheet) => {
       sheet.innerHTML =
-        `<h2>${esc(station.name)}</h2>` +
-        `<div class="ticket">` +
-        (entry.walk
-          ? `<div><b>On foot</b> from ${esc(seeker(s).name)}</div>`
-          : `<div><b>${esc(entry.mode)} ${esc(entry.ref)}</b> towards ${esc(entry.towards)}</div>` +
-            `<div>Departs ${clockAt(entry.departures[0])}` +
-            (cost.wait > 0 ? ` — ${formatDuration(cost.wait)} waiting` : " — straight on") + `</div>`) +
-        `<div>${formatDuration(cost.onboard)} on board</div>` +
-        `<div class="total">Arrive ${clockAt(s.clock + cost.minutes)} — costs you ${formatDuration(cost.minutes)}</div>` +
-        `</div>`;
+        `<h2>${esc(t("jr.title", { name: station.name }))}</h2>` +
+        `<p class="sheetnote">${esc(t("jr.note"))}</p>` +
+        `<div class="ticket">` + this.journeyHtml(plan) +
+        `<div class="total">${esc(t("jr.total", {
+          clock: formatClock(RULES.startClock + s.clock + plan.minutes),
+          total: formatDuration(plan.minutes),
+        }))}</div></div>`;
       const go = document.createElement("button");
       go.className = "btn go";
-      go.textContent = "Confirm journey";
+      go.textContent = t("jr.confirm");
       go.addEventListener("click", () => { this.closeModal(); this.on.travel(station); });
       const back = document.createElement("button");
       back.className = "btn";
-      back.textContent = "Back to the board";
+      back.textContent = t("jr.cancel");
       back.addEventListener("click", () => this.showBoard());
       sheet.append(go, back);
     });
@@ -434,10 +492,11 @@ export class UI {
   renderHangman(sheet, c) {
     const shown = [...c.word].map((ch) => (c.guessed.has(ch) ? ch : "_")).join(" ");
     sheet.insertAdjacentHTML("beforeend",
-      `<h2 class="curse">The Hidden Hangman</h2>
-       <p>Guess the five-letter word. Every wrong letter costs you 8 minutes.
-          So far: <b>${c.wrong}</b> wrong, <b>${c.wrong * c.minutesPerMiss} min</b> lost.</p>
-       <div class="word">${shown}</div>`);
+      `<h2 class="curse">${esc(t("curse.hangman.name"))}</h2>` +
+      `<p>${t("ch.hangman.body", {
+         per: c.minutesPerMiss, wrong: c.wrong,
+         lost: formatDuration(c.wrong * c.minutesPerMiss) })}</p>` +
+      `<div class="word">${shown}</div>`);
     const keys = document.createElement("div");
     keys.className = "keys";
     for (const ch of "abcdefghijklmnopqrstuvwxyz") {
@@ -453,14 +512,14 @@ export class UI {
   renderTumble(sheet, c) {
     const last = c.rolls[c.rolls.length - 1];
     sheet.insertAdjacentHTML("beforeend",
-      `<h2 class="curse">The Endless Tumble</h2>
-       <p>Roll the die down the hill until it lands on a 5 or a 6.
-          Every throw costs you 5 minutes. So far: <b>${c.rolls.length}</b> throws,
-          <b>${c.rolls.length * c.minutesPerRoll} min</b> lost.</p>
-       <div class="dice">${last ? "⚀⚁⚂⚃⚄⚅"[last - 1] : "·"}</div>`);
+      `<h2 class="curse">${esc(t("curse.endless_tumble.name"))}</h2>` +
+      `<p>${t("ch.tumble.body", {
+         per: c.minutesPerRoll, n: c.rolls.length,
+         lost: formatDuration(c.rolls.length * c.minutesPerRoll) })}</p>` +
+      `<div class="dice">${last ? "⚀⚁⚂⚃⚄⚅"[last - 1] : "·"}</div>`);
     const b = document.createElement("button");
     b.className = "btn";
-    b.textContent = c.rolls.length ? "Throw again" : "Throw the die";
+    b.textContent = c.rolls.length ? t("ch.tumble.again") : t("ch.tumble.throw");
     b.addEventListener("click", () => this.step(null));
     sheet.append(b);
   }
@@ -468,10 +527,10 @@ export class UI {
   renderLabyrinth(sheet, c) {
     const { w, h, cells } = c.maze;
     sheet.insertAdjacentHTML("beforeend",
-      `<h2 class="curse">The Labyrinth</h2>
-       <p>Walk from the top-left to the bottom-right with the arrow keys.
-          Every step costs you 2 minutes. So far: <b>${c.steps}</b> steps,
-          <b>${c.steps * c.minutesPerStep} min</b> lost.</p>`);
+      `<h2 class="curse">${esc(t("curse.labyrinth.name"))}</h2>` +
+      `<p>${t("ch.maze.body", {
+         per: c.minutesPerStep, n: c.steps,
+         lost: formatDuration(c.steps * c.minutesPerStep) })}</p>`);
     const grid = document.createElement("div");
     grid.className = "maze";
     grid.style.gridTemplateColumns = `repeat(${w}, 30px)`;
@@ -497,16 +556,24 @@ export class UI {
     }
   }
 
-  /** The three numbers a round ends on, shared by both result sheets. */
+  /** The numbers a round ends on, shared by both result sheets.
+   *
+   *  Two of them with the deck out of play: with no cards there are no time
+   *  bonuses, so the clock and the score are the same number, and printing it
+   *  twice with a "+0m" between them says nothing. */
   scoreRow({ elapsed, bonus, total }) {
-    return `<div class="row" style="gap:22px;margin-bottom:16px">
-           <div><b style="font-size:26px;font-family:var(--mono)">${formatDuration(elapsed)}</b>
-                <div style="color:var(--dim);font-size:11px">on the clock</div></div>
-           <div><b style="font-size:26px;font-family:var(--mono)">+${bonus}m</b>
-                <div style="color:var(--dim);font-size:11px">time-bonus cards held</div></div>
-           <div><b style="font-size:26px;font-family:var(--mono);color:var(--candidate)">${formatDuration(total)}</b>
-                <div style="color:var(--dim);font-size:11px">the hider's score</div></div>
-         </div>`;
+    const cell = (value, label, lead) =>
+      `<div><b style="font-size:26px;font-family:var(--mono)` +
+      (lead ? ";color:var(--candidate)" : "") + `">${esc(value)}</b>` +
+      `<div style="color:var(--dim);font-size:11px">${esc(label)}</div></div>`;
+    if (!this.state.cards) {
+      return `<div class="row" style="gap:22px;margin-bottom:16px">` +
+        cell(formatDuration(total), t("res.totalNoCards"), true) + `</div>`;
+    }
+    return `<div class="row" style="gap:22px;margin-bottom:16px">` +
+      cell(formatDuration(elapsed), t("res.clock")) +
+      cell(`+${bonus}m`, t("res.bonus")) +
+      cell(formatDuration(total), t("res.total"), true) + `</div>`;
   }
 
   showResult() {
@@ -517,18 +584,19 @@ export class UI {
     if (this.match) return this.showMatchResult(score);
     this.openModal((sheet) => {
       sheet.innerHTML =
-        `<h2>Found them at ${esc(s.hider.committed.name)}</h2>
-         <p>${esc(s.hider.committed.district ?? "")} · ${esc(s.hider.committed.municipality ?? "")}</p>` +
+        `<h2>${esc(t("res.foundAt", { name: s.hider.committed.name }))}</h2>` +
+        `<p>${[s.hider.committed.district, s.hider.committed.municipality]
+               .filter(Boolean).map(esc).join(" · ")}</p>` +
         this.scoreRow(score) +
-        `<p>You asked ${[...s.asked.values()].reduce((a, b) => a + b, 0)} question(s)
-            and searched ${s.checked.size} station(s).</p>`;
+        `<p>${esc(t("res.stats", {
+           q: [...s.asked.values()].reduce((a, b) => a + b, 0), s: s.checked.size }))}</p>`;
       const again = document.createElement("button");
       again.className = "btn";
-      again.textContent = "New run";
+      again.textContent = t("res.new");
       again.addEventListener("click", () => location.reload());
       const close = document.createElement("button");
       close.className = "btn ghost";
-      close.textContent = "Look at the map";
+      close.textContent = t("res.look");
       close.addEventListener("click", () => this.closeModal());
       const row = document.createElement("div");
       row.className = "row";
@@ -551,34 +619,33 @@ export class UI {
     const used = s.hider.travelMinutes();
     this.openModal((sheet) => {
       sheet.innerHTML =
-        `<h2>${esc(m.seekerName)} found ${esc(m.hiderName)} at ${esc(found.name)}</h2>
-         <p>${[found.district, found.municipality].filter(Boolean).map(esc).join(" · ")}` +
+        `<h2>${esc(t("res.matchTitle", {
+           seeker: m.seekerName, hider: m.hiderName, name: found.name }))}</h2>` +
+        `<p>${[found.district, found.municipality].filter(Boolean).map(esc).join(" · ")}` +
         (used != null
-          ? ` — ${formatDuration(used)} of a ${formatDuration(s.hiding.minutes)} head start spent getting there.`
+          ? esc(t("res.matchSpent", {
+              used: formatDuration(used), window: formatDuration(s.hiding.minutes) }))
           : "") + `</p>` +
         this.scoreRow(score) +
         `<div class="standings">` +
-        m.names.map((n, i) => {
-          const hides = m.hidesEach[i];
-          return `<div class="srow${m.leader === n ? " lead" : ""}">` +
-            `<span class="who">${esc(n)}<span style="color:var(--dim);font-weight:400"> · ` +
-            `${hides} round${hides === 1 ? "" : "s"} hidden</span></span>` +
-            `<b>${formatDuration(m.totals[i])}</b></div>`;
-        }).join("") +
+        m.names.map((n, i) =>
+          `<div class="srow${m.leader === n ? " lead" : ""}">` +
+          `<span class="who">${esc(n)}<span style="color:var(--dim);font-weight:400"> · ` +
+          `${esc(t("res.rounds", { n: m.hidesEach[i] }))}</span></span>` +
+          `<b>${formatDuration(m.totals[i])}</b></div>`).join("") +
         `<div class="note">` +
-        (m.level
-          ? m.leader ? `${esc(m.leader)} is ahead on time hidden.` : "Level on time hidden."
-          : `${esc(m.nextHiderName)} has yet to hide this time round — play the next one to make it a fair comparison.`) +
+        esc(m.level
+          ? (m.leader ? t("res.ahead", { name: m.leader }) : t("res.level"))
+          : t("res.unfair", { name: m.nextHiderName })) +
         `</div></div>` +
-        `<p>Round ${m.round + 1} starts here, at ${esc(found.name)}: whoever is found is
-            found somewhere, and that is where the next one begins.</p>`;
+        `<p>${esc(t("res.nextStarts", { n: m.round + 1, name: found.name }))}</p>`;
       const next = document.createElement("button");
       next.className = "btn";
-      next.textContent = `Pass to ${m.nextHiderName} — round ${m.round + 1}`;
+      next.textContent = t("res.next", { name: m.nextHiderName, n: m.round + 1 });
       next.addEventListener("click", () => { this.closeModal(); this.on.nextRound(); });
       const close = document.createElement("button");
       close.className = "btn ghost";
-      close.textContent = "Look at the map";
+      close.textContent = t("res.look");
       close.addEventListener("click", () => this.closeModal());
       const row = document.createElement("div");
       row.className = "row";

@@ -9,6 +9,7 @@
 
 import { RULES } from "./rules.js";
 import { haversine, formatKm } from "./geo.js";
+import { t } from "./i18n.js";
 
 const yesNo = (yes, no) => (v) => (v ? yes : no);
 
@@ -33,6 +34,8 @@ export function buildQuestions(world) {
   // nemocnice is only information if you know what the other eight are.
   // Rivers are baked as a name list rather than a point list, so they come
   // from `world.rivers`; everything else is a POI category.
+  // Place names are Czech whichever language the interface is in, so they are
+  // always collated as Czech -- an English sort puts Zidenice before Reckovice.
   const cs = (a, b) => a.localeCompare(b, "cs");
   const namesFor = (cat) =>
     cat === "river"
@@ -43,9 +46,9 @@ export function buildQuestions(world) {
   for (const km of P.radarKm) {
     Q.push({
       id: `radar_${km}`, cat: "radar", short: `${km} km`,
-      text: `Are you within ${km} km of me?`,
+      text: t("q.radar.text", { km }),
       ask: (s, ctx) => haversine(s, ctx.seeker) <= km,
-      format: yesNo(`Yes — I am within ${km} km of you.`, `No — I am more than ${km} km away.`),
+      format: yesNo(t("q.radar.yes", { km }), t("q.radar.no", { km })),
     });
   }
 
@@ -55,40 +58,49 @@ export function buildQuestions(world) {
   for (const km of P.thermometerKm) {
     Q.push({
       id: `thermo_${km}`, cat: "thermometer", short: `${km} km`, travelKm: km,
-      text: `I will travel at least ${km} km. Am I hotter or colder afterwards?`,
+      text: t("q.thermo.text", { km }),
       ask: (s, ctx) => haversine(s, ctx.to) < haversine(s, ctx.from),
-      format: yesNo("Hotter — you moved closer to me.", "Colder — you moved away from me."),
+      format: yesNo(t("q.thermo.hot"), t("q.thermo.cold")),
     });
   }
 
   // ---- Matching -------------------------------------------------------
-  for (const t of P.matching) {
-    if (!usable(t.cat)) continue;
+  // A POI category carries three things the questions need: what it is called
+  // in the singular, in the plural, and its grammatical gender. Czech makes
+  // "the same as mine" agree with the noun, so the gender is not decoration --
+  // without it these read as three separate broken sentences.
+  const label = (cat) => t(`poi.${cat}.one`);
+  const labels = (cat) => t(`poi.${cat}.many`);
+  const gender = (cat) => t(`poi.${cat}.g`);
+
+  for (const cat of P.matching) {
+    if (!usable(cat)) continue;
+    const g = gender(cat);
     Q.push({
-      id: `match_${t.cat}`, cat: "matching", short: t.label,
-      text: `Is your nearest ${t.label} the same as mine?`,
-      ask: (s, ctx) => near(t.cat).name[s.id] === near(t.cat).name[ctx.seeker.id],
-      context: (ctx) => `yours is ${near(t.cat).name[ctx.seeker.id] ?? "— none —"}`,
-      list: () => namesFor(t.cat),
-      mine: (ctx) => near(t.cat).name[ctx.seeker.id],
-      format: yesNo("Yes — the same one.", "No — a different one."),
+      id: `match_${cat}`, cat: "matching", short: label(cat),
+      text: t("q.matchPoi.text", { label: label(cat), g }),
+      ask: (s, ctx) => near(cat).name[s.id] === near(cat).name[ctx.seeker.id],
+      context: (ctx) => t("q.matchPoi.ctx", { name: near(cat).name[ctx.seeker.id] ?? t("q.none") }),
+      list: () => namesFor(cat),
+      mine: (ctx) => near(cat).name[ctx.seeker.id],
+      format: yesNo(t("q.matchPoi.yes", { g }), t("q.matchPoi.no", { g })),
     });
   }
   if (on("match_district") && varies((s) => s.district)) Q.push({
-    id: "match_district", cat: "matching", short: "district",
-    text: "Are you in the same district as me?",
+    id: "match_district", cat: "matching", short: t("q.district.short"),
+    text: t("q.district.text"),
     ask: (s, ctx) => s.district === ctx.seeker.district,
-    context: (ctx) => `you are in ${ctx.seeker.district}`,
+    context: (ctx) => t("q.district.ctx", { name: ctx.seeker.district }),
     list: () => [...new Set(world.stations.map((s) => s.district).filter(Boolean))].sort(cs),
     mine: (ctx) => ctx.seeker.district,
-    format: yesNo("Yes — the same district.", "No — a different district."),
+    format: yesNo(t("q.district.yes"), t("q.district.no")),
   });
   if (on("match_municipality") && varies((s) => s.municipality)) Q.push({
-    id: "match_municipality", cat: "matching", short: "locality",
-    text: "Are you in the same locality as me?",
+    id: "match_municipality", cat: "matching", short: t("q.municipality.short"),
+    text: t("q.municipality.text"),
     ask: (s, ctx) => s.municipality === ctx.seeker.municipality,
-    context: (ctx) => `you are in ${ctx.seeker.municipality}`,
-    format: yesNo("Yes — the same one.", "No — a different one."),
+    context: (ctx) => t("q.municipality.ctx", { name: ctx.seeker.municipality }),
+    format: yesNo(t("q.municipality.yes"), t("q.municipality.no")),
   });
 
   // Transit line, the rulebook's Matching target. On a city map with 140
@@ -96,19 +108,22 @@ export function buildQuestions(world) {
   // stations sit on exactly one line, so it is close to naming the corridor.
   if (world.lines?.length && on("match_line")) {
     Q.push({
-      id: "match_line", cat: "matching", short: "transit line",
-      text: "Is your stop served by any of the same lines as mine?",
+      id: "match_line", cat: "matching", short: t("q.line.short"),
+      text: t("q.line.text"),
       ask: (s, ctx) => s.lines.some((l) => ctx.seeker.lines.includes(l)),
-      context: (ctx) => `you are on ${world.lineNames(ctx.seeker.lines).join(", ") || "no known line"}`,
+      context: (ctx) => {
+        const mine = world.lineNames(ctx.seeker.lines).join(", ");
+        return mine ? t("q.line.ctx", { lines: mine }) : t("q.line.ctxNone");
+      },
       list: () => world.lines.slice(),
-      format: yesNo("Yes — we share a line.", "No — no line runs through both."),
+      format: yesNo(t("q.line.yes"), t("q.line.no")),
     });
     if (on("measure_lines") && varies((s) => s.lines.length)) Q.push({
-      id: "measure_lines", cat: "measuring", short: "lines served",
-      text: "Is your stop served by more lines than mine?",
+      id: "measure_lines", cat: "measuring", short: t("q.lines.short"),
+      text: t("q.lines.text"),
       ask: (s, ctx) => s.lines.length > ctx.seeker.lines.length,
-      context: (ctx) => `yours has ${ctx.seeker.lines.length}`,
-      format: yesNo("More — mine is the busier interchange.", "Fewer or equal — mine is no busier than yours."),
+      context: (ctx) => t("q.lines.ctx", { n: ctx.seeker.lines.length }),
+      format: yesNo(t("q.lines.more"), t("q.lines.fewer")),
     });
   }
   // Means of transport. Brno's stops carry `kind`, set at build time from
@@ -120,31 +135,34 @@ export function buildQuestions(world) {
   // anything. The rail map has the same field with different values (station
   // against halt), so the wording comes from the map rather than from here.
   if (on("match_mode") && P.kindQuestion && varies((s) => s.kind === P.kindQuestion.value)) {
-    const K = P.kindQuestion;
-    const isKind = (s) => s.kind === K.value;
+    // One question, different words on each map -- Brno splits trams from
+    // everything else, the region would split stations from halts -- so the
+    // wording is keyed by map id in the dictionary rather than written here.
+    const isKind = (s) => s.kind === P.kindQuestion.value;
+    const K = (part) => t(`kind.${world.id}.${part}`);
     Q.push({
-      id: "match_mode", cat: "matching", short: K.short,
-      text: K.text,
+      id: "match_mode", cat: "matching", short: K("short"),
+      text: K("text"),
       ask: (s, ctx) => isKind(s) === isKind(ctx.seeker),
-      context: (ctx) => (isKind(ctx.seeker) ? K.yours : K.notYours),
-      list: () => K.options ?? [],
-      mine: (ctx) => (K.options ?? [])[isKind(ctx.seeker) ? 0 : 1],
-      format: yesNo("Yes — the same as you.", "No — the other one."),
+      context: (ctx) => (isKind(ctx.seeker) ? K("yours") : K("notYours")),
+      list: () => [K("opt0"), K("opt1")],
+      mine: (ctx) => K(isKind(ctx.seeker) ? "opt0" : "opt1"),
+      format: yesNo(t("q.matchPoi.yes", { g: "m" }), t("q.matchPoi.no", { g: "m" })),
     });
   }
   if (on("match_letter")) Q.push({
-    id: "match_letter", cat: "matching", short: "first letter",
-    text: "Does your station's name start with the same letter as mine?",
+    id: "match_letter", cat: "matching", short: t("q.letter.short"),
+    text: t("q.letter.text"),
     ask: (s, ctx) => s.name[0].toLocaleUpperCase("cs") === ctx.seeker.name[0].toLocaleUpperCase("cs"),
-    context: (ctx) => `yours starts with ${ctx.seeker.name[0].toLocaleUpperCase("cs")}`,
-    format: yesNo("Yes — the same letter.", "No — a different letter."),
+    context: (ctx) => t("q.letter.ctx", { letter: ctx.seeker.name[0].toLocaleUpperCase("cs") }),
+    format: yesNo(t("q.letter.yes"), t("q.letter.no")),
   });
   if (on("match_length")) Q.push({
-    id: "match_length", cat: "matching", short: "name length",
-    text: "Does your station's name have the same number of letters as mine?",
+    id: "match_length", cat: "matching", short: t("q.length.short"),
+    text: t("q.length.text"),
     ask: (s, ctx) => world.letters[s.id] === world.letters[ctx.seeker.id],
-    context: (ctx) => `yours has ${world.letters[ctx.seeker.id]} letters`,
-    format: yesNo("Yes — the same number of letters.", "No — a different number."),
+    context: (ctx) => t("q.length.ctx", { n: world.letters[ctx.seeker.id] }),
+    format: yesNo(t("q.length.yes"), t("q.length.no")),
   });
 
   // ---- Measuring ------------------------------------------------------
@@ -152,59 +170,64 @@ export function buildQuestions(world) {
   // oblige you to offer the other. In Brno all eight "is your nearest X
   // closer than mine?" questions scored within 2.1 points of each other and
   // none survived the cut.
-  for (const t of P.measuring) {
-    if (!usable(t.cat)) continue;
+  for (const cat of P.measuring) {
+    if (!usable(cat)) continue;
     Q.push({
-      id: `measure_${t.cat}`, cat: "measuring", short: t.label,
-      text: `Is your nearest ${t.label} closer to you than mine is to me?`,
-      ask: (s, ctx) => near(t.cat).km[s.id] < near(t.cat).km[ctx.seeker.id],
-      context: (ctx) => `yours is ${near(t.cat).name[ctx.seeker.id] ?? "— none —"}, ${formatKm(near(t.cat).km[ctx.seeker.id])} away`,
-      list: () => namesFor(t.cat),
-      mine: (ctx) => near(t.cat).name[ctx.seeker.id],
-      format: yesNo("Closer — mine is nearer than yours.", "Further — mine is further than yours."),
+      id: `measure_${cat}`, cat: "measuring", short: label(cat),
+      text: t("q.measurePoi.text", { label: label(cat), g: gender(cat) }),
+      ask: (s, ctx) => near(cat).km[s.id] < near(cat).km[ctx.seeker.id],
+      context: (ctx) => t("q.measurePoi.ctx", {
+        name: near(cat).name[ctx.seeker.id] ?? t("q.none"),
+        km: formatKm(near(cat).km[ctx.seeker.id]),
+      }),
+      list: () => namesFor(cat),
+      mine: (ctx) => near(cat).name[ctx.seeker.id],
+      format: yesNo(t("q.measurePoi.closer"), t("q.measurePoi.further")),
     });
   }
   if (on("measure_ele") && varies((s) => s.ele)) Q.push({
-    id: "measure_ele", cat: "measuring", short: "elevation",
-    text: "Are you at a higher elevation than me?",
+    id: "measure_ele", cat: "measuring", short: t("q.ele.short"),
+    text: t("q.ele.text"),
     ask: (s, ctx) => s.ele > ctx.seeker.ele,
-    context: (ctx) => `you are at ${Math.round(ctx.seeker.ele)} m`,
-    format: yesNo("Higher — I am above you.", "Lower — I am at or below your elevation."),
+    context: (ctx) => t("q.ele.ctx", { n: Math.round(ctx.seeker.ele) }),
+    format: yesNo(t("q.ele.higher"), t("q.ele.lower")),
   });
   if (on("measure_pop") && varies((s) => s.population)) Q.push({
-    id: "measure_pop", cat: "measuring", short: "population",
-    text: "Is your municipality larger than mine by population?",
+    id: "measure_pop", cat: "measuring", short: t("q.pop.short"),
+    text: t("q.pop.text"),
     ask: (s, ctx) => s.population > ctx.seeker.population,
-    context: (ctx) => `yours has ${ctx.seeker.population.toLocaleString("cs")} people`,
-    format: yesNo("Larger — mine has more people.", "Smaller — mine has no more people than yours."),
+    context: (ctx) => t("q.pop.ctx", { n: ctx.seeker.population.toLocaleString("cs") }),
+    format: yesNo(t("q.pop.larger"), t("q.pop.smaller")),
   });
   if (on("measure_hub")) Q.push({
     id: "measure_hub", cat: "measuring", short: world.hub.name,
-    text: `Are you closer to ${world.hub.name} than I am?`,
+    text: t("q.hub.text", { name: world.hub.name }),
     ask: (s, ctx) => haversine(s, world.hub) < haversine(ctx.seeker, world.hub),
-    context: (ctx) => `you are ${formatKm(haversine(ctx.seeker, world.hub))} from it`,
-    format: yesNo("Closer — I am nearer to it than you.", "Further — I am further from it than you."),
+    context: (ctx) => t("q.hub.ctx", { km: formatKm(haversine(ctx.seeker, world.hub)) }),
+    format: yesNo(t("q.hub.closer"), t("q.hub.further")),
   });
 
   // ---- Tentacles ------------------------------------------------------
   // The strongest question in the game: the answer names a specific place,
   // which pins the hider to that POI's Voronoi cell intersected with the disc.
-  for (const t of P.tentacles) {
-    if (!usable(t.cat)) continue;
+  for (const { cat, km } of P.tentacles) {
+    if (!usable(cat)) continue;
+    const g = gender(cat);
     Q.push({
-      id: `tent_${t.cat}_${t.km}`, cat: "tentacles", short: `${t.label} · ${t.km} km`,
-      text: `Of all the ${t.label} within ${t.km} km of you, which are you nearest to?`,
-      ask: (s) => (near(t.cat).km[s.id] <= t.km ? near(t.cat).name[s.id] : null),
+      id: `tent_${cat}_${km}`, cat: "tentacles",
+      short: t("q.tent.short", { labels: labels(cat), km }),
+      text: t("q.tent.text", { labels: labels(cat), km, g }),
+      ask: (s) => (near(cat).km[s.id] <= km ? near(cat).name[s.id] : null),
       // The answer names a place, so the list of places is the question. Also
       // shown: the seeker's own nearest, which is what tells them whether an
       // answer of "none within" puts the hider near them or far from them.
       context: (ctx) =>
-        near(t.cat).km[ctx.seeker.id] <= t.km
-          ? `yours is ${near(t.cat).name[ctx.seeker.id]}`
-          : `you have none within ${t.km} km`,
-      list: () => namesFor(t.cat),
-      mine: (ctx) => (near(t.cat).km[ctx.seeker.id] <= t.km ? near(t.cat).name[ctx.seeker.id] : null),
-      format: (v) => (v ? `The nearest is ${v}.` : `There are none within ${t.km} km of me.`),
+        near(cat).km[ctx.seeker.id] <= km
+          ? t("q.tent.ctx", { name: near(cat).name[ctx.seeker.id] })
+          : t("q.tent.ctxNone", { km, g }),
+      list: () => namesFor(cat),
+      mine: (ctx) => (near(cat).km[ctx.seeker.id] <= km ? near(cat).name[ctx.seeker.id] : null),
+      format: (v) => (v ? t("q.tent.nearest", { name: v }) : t("q.tent.none", { km, g })),
     });
   }
 
@@ -218,30 +241,33 @@ export function buildQuestions(world) {
   // zoom 11 covers the whole city and its outskirts, so that photo cost ten
   // minutes for a picture that could have been taken anywhere.
   const photos = [
-    { id: "photo_street", zoom: 17, short: "the street outside", text: "Send me a photo of the street outside your station." },
-    { id: "photo_around", zoom: 15, short: "your surroundings", text: "Send me a photo of your surroundings." },
-    { id: "photo_wide",   zoom: 13, short: "the view from here", text: "Send me a photo of the view from where you are." },
-    { id: "photo_sky",    zoom: 11, short: "the horizon", text: "Send me a photo of the horizon in every direction." },
+    { id: "photo_street", key: "street", zoom: 17 },
+    { id: "photo_around", key: "around", zoom: 15 },
+    { id: "photo_wide",   key: "wide",   zoom: 13 },
+    { id: "photo_sky",    key: "sky",    zoom: 11 },
   ].filter((p) => !P.photoZooms || P.photoZooms.includes(p.zoom));
   for (const p of photos) {
     Q.push({
-      ...p, cat: "photo", visual: true,
+      id: p.id, zoom: p.zoom, cat: "photo", visual: true,
+      short: t(`q.photo.${p.key}.short`),
+      text: t(`q.photo.${p.key}.text`),
       ask: (s) => ({ lat: s.lat, lon: s.lon, zoom: p.zoom }),
-      format: () => "Photo sent.",
+      format: () => t("q.photo.sent"),
     });
   }
 
   return Q;
 }
 
-export const CATEGORIES = [
-  { id: "matching",    name: "Matching",    blurb: "Do we share the same nearest thing?" },
-  { id: "measuring",   name: "Measuring",   blurb: "Compared to me, are you closer or further?" },
-  { id: "radar",       name: "Radar",       blurb: "Are you within a given distance?" },
-  { id: "thermometer", name: "Thermometer", blurb: "I travel, then you tell me hotter or colder." },
-  { id: "tentacles",   name: "Tentacles",   blurb: "Which one of these are you nearest to?" },
-  { id: "photo",       name: "Photo",       blurb: "Send me a picture of where you are." },
-];
+// Ids only, in the order the tabs appear. The name and the one-line
+// description are looked up when the tab is painted rather than baked in
+// here: this array is evaluated when the module is imported, which is before
+// the start screen has had a chance to say which language to use.
+export const CATEGORIES = ["matching", "measuring", "radar", "thermometer",
+                           "tentacles", "photo"];
+
+export const categoryName = (id) => t(`cat.${id}.name`);
+export const categoryBlurb = (id) => t(`cat.${id}.blurb`);
 
 /** Answer `q` from the hider's station, and return the surviving candidates. */
 export function applyQuestion(q, hider, ctx, world, candidates) {

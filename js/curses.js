@@ -11,8 +11,14 @@
 //              where playing badly costs game minutes
 //
 // Curse effects live on state.effects and are consumed by game.js.
+//
+// Only the mechanics are here. A curse's name and its line of flavour are
+// looked up from the dictionary at the point it is cast (`curse.<id>.name`,
+// `.flavour`), and `apply` returns its effect already worded -- so this file
+// stays the rules and js/i18n.js stays the words.
 
 import { RULES } from "./rules.js";
+import { t } from "./i18n.js";
 
 /** Stations within `maxHops` stops, as a Map of id -> hops (including 0 for
  *  the start). Plain graph hops rather than travel time: "three stops away"
@@ -37,75 +43,61 @@ function withinHops(world, startId, maxHops) {
 
 export const CURSES = {
   jammed_door: {
-    name: "The Jammed Door",
     kind: "penalty",
-    flavour: "Every door you touch sticks. The next three stations you reach will not let you in easily.",
     apply(state) {
       state.effects.jammedDoors = (state.effects.jammedDoors || 0) + 3;
-      return "The next 3 stations you enter cost a 2d6 roll; under 7 loses you 10 minutes.";
+      return t("curse.jammed_door.effect");
     },
   },
 
   gamblers_feet: {
-    name: "The Gambler's Feet",
     kind: "penalty",
-    flavour: "Your feet will not commit to a direction without consulting a die first.",
     apply(state) {
       state.effects.slowLegs = (state.effects.slowLegs || 0) + 2;
-      return "Your next 2 journeys take 50% longer.";
+      return t("curse.gamblers_feet.effect");
     },
   },
 
   right_turn: {
-    name: "The Right Turn",
     kind: "penalty",
-    flavour: "You may only ever turn right, which is no way to cross a region.",
     apply(state) {
       state.effects.longWay = (state.effects.longWay || 0) + 1;
-      return "Your next journey must go the long way round: 40% longer.";
+      return t("curse.right_turn.effect");
     },
   },
 
   u_turn: {
-    name: "The U-Turn",
     kind: "penalty",
-    flavour: "You were going the wrong way. Get off and go back.",
     apply(state) {
       if (state.previousStation === null || state.previousStation === state.seekerId) {
         state.effects.slowLegs = (state.effects.slowLegs || 0) + 1;
-        return "You had nowhere to be sent back to, so your next journey is 50% longer instead.";
+        return t("curse.u_turn.effectNone");
       }
       state.effects.forcedReturn = state.previousStation;
-      return "You must return to the station you just left before doing anything else.";
+      return t("curse.u_turn.effect");
     },
   },
 
   urban_explorer: {
-    name: "The Urban Explorer",
     kind: "penalty",
-    flavour: "You cannot bear to sit still on a platform and think.",
     apply(state) {
       state.effects.noRepeatAsk = true;
-      return "For the rest of the run you cannot ask two questions from the same station.";
+      return t("curse.urban_explorer.effect");
     },
   },
 
   spotty_memory: {
-    name: "Spotty Memory",
     kind: "penalty",
-    flavour: "A whole category of question has slipped your mind.",
     apply(state, rng) {
       const cats = ["matching", "measuring", "radar", "thermometer", "tentacles", "photo"];
       const cat = cats[Math.floor(rng() * cats.length)];
       state.effects.blockedCategory = { cat, questions: 3 };
-      return `You cannot ask ${cat} questions for your next 3 questions.`;
+      return t("curse.spotty_memory.effect", { cat: t(`cat.${cat}.name`) });
     },
   },
 
   drained_brain: {
-    name: "The Drained Brain",
     kind: "penalty",
-    flavour: "Three questions have been scrubbed from your mind entirely.",
     apply(state, rng, ctx) {
       const byCat = new Map();
       for (const q of ctx.questions) {
@@ -119,26 +111,22 @@ export const CURSES = {
         const list = byCat.get(c);
         const q = list[Math.floor(rng() * list.length)];
         state.bannedQuestions.add(q.id);
-        picked.push(q.short ? `${c}: ${q.short}` : q.text);
+        picked.push(q.short ? `${t(`cat.${c}.name`)}: ${q.short}` : q.text);
       }
-      return `Banned for the rest of the run — ${picked.join("; ")}.`;
+      return t("curse.drained_brain.effect", { list: picked.join("; ") });
     },
   },
 
   overflowing: {
-    name: "The Overflowing Chalice",
     kind: "penalty",
-    flavour: "The hider's cup runneth over.",
     apply(state) {
       state.effects.chalice = (state.effects.chalice || 0) + 3;
-      return "The hider draws an extra card on each of their next 3 answers.";
+      return t("curse.overflowing.effect");
     },
   },
 
   travel_agent: {
-    name: "The Mediocre Travel Agent",
     kind: "penalty",
-    flavour: "A holiday has been booked on your behalf. The agent has been suspiciously specific.",
     // The book's version sends the seekers somewhere unhelpful, and the first
     // implementation here did exactly that: a random station 20-60 minutes
     // away, drawn from the whole network. It could therefore book you into a
@@ -196,7 +184,7 @@ export const CURSES = {
         }
         if (best) dest = world.byId.get(best.id);
       }
-      if (!dest) return "The travel agent could not find anywhere. Nothing happens.";
+      if (!dest) return t("curse.travel_agent.effectNone");
 
       // The booking is information, so it filters, exactly like an answer.
       const legal = withinHops(world, dest.id, maxHops);
@@ -206,57 +194,56 @@ export const CURSES = {
       hider.candidates = hider.candidates.filter(keep);
 
       state.effects.mustVisit = dest.id;
-      const cut = before - state.candidates.length;
-      return `You must visit ${dest.name} before you may ask another question — ` +
-             `and the agent only books within ${maxHops} stops of the hider. ` +
-             `${cut} station(s) ruled out.`;
+      return t("curse.travel_agent.effect", {
+        name: dest.name, hops: maxHops, n: before - state.candidates.length,
+      });
     },
   },
 
   hangman: {
-    name: "The Hidden Hangman",
     kind: "challenge",
-    flavour: "You must win a game of hangman before you go anywhere.",
     apply(state, rng) {
-      const word = HANGMAN_WORDS[Math.floor(rng() * HANGMAN_WORDS.length)];
+      const words = hangmanWords();
+      const word = words[Math.floor(rng() * words.length)];
       // Two minutes a miss, not eight. At eight a single bad word ran to a
       // hundred minutes -- more than the whole rest of the run -- and a curse
       // that decides the game on how well you guess Czech nouns is not a
       // curse, it is a different game bolted on.
-      state.challenge = { type: "hangman", word, guessed: new Set(), wrong: 0, minutesPerMiss: 2 };
-      return "Guess the word. Every wrong letter costs you 2 minutes.";
+      const minutesPerMiss = 2;
+      state.challenge = { type: "hangman", word, guessed: new Set(), wrong: 0, minutesPerMiss };
+      return t("curse.hangman.effect", { n: minutesPerMiss });
     },
   },
 
   labyrinth: {
-    name: "The Labyrinth",
     kind: "challenge",
-    flavour: "The station has rearranged itself into a maze. Find your way out.",
     apply(state, rng) {
       // A minute a step. The shortest way out of a 7x7 maze is a dozen-odd
       // steps and a wrong turn costs several more, so at two minutes a step
       // this was routinely half an hour for a puzzle nobody enjoys twice.
-      state.challenge = { type: "labyrinth", maze: generateMaze(7, 7, rng), at: 0, steps: 0, minutesPerStep: 1 };
-      return "Walk from the top-left to the bottom-right. Every step costs you 1 minute.";
+      const minutesPerStep = 1;
+      state.challenge = { type: "labyrinth", maze: generateMaze(7, 7, rng), at: 0, steps: 0, minutesPerStep };
+      return t("curse.labyrinth.effect", { n: minutesPerStep });
     },
   },
 
   endless_tumble: {
-    name: "The Endless Tumble",
     kind: "challenge",
-    flavour: "A die must be rolled down the hill, and it must land well.",
     apply(state) {
-      state.challenge = { type: "tumble", rolls: [], minutesPerRoll: 5 };
-      return "Roll a 5 or a 6 to continue. Every roll costs you 5 minutes.";
+      const minutesPerRoll = 5;
+      state.challenge = { type: "tumble", rolls: [], minutesPerRoll };
+      return t("curse.endless_tumble.effect", { n: minutesPerRoll });
     },
   },
 };
 
-const HANGMAN_WORDS = [
-  "train", "board", "north", "river", "cliff", "gorge", "plaza", "abbey", "cargo",
-  "vault", "wharf", "bench", "spire", "kiosk", "crown", "hedge", "marsh", "grove",
-  "tower", "canal", "depot", "ridge", "brook", "field", "cabin", "chalk", "flint",
-];
+/** The hangman word list for the language in play.
+ *
+ *  The on-screen keyboard is a to z, so the Czech list is words genuinely
+ *  written without diacritics -- "kolej", "peron", "sklep" -- rather than
+ *  accented words with the accents knocked off, which would be a spelling
+ *  test nobody can win and bad Czech besides. */
+const hangmanWords = () => t("hangman.words").split(" ");
 
 /** Perfect maze on a w x h grid, carved by randomised depth-first search.
  *  Cells are bitmasks of open sides: 1 N, 2 E, 4 S, 8 W. */

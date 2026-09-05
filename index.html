@@ -1,9 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="cs">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Hide + Seek — South Moravia &amp; Brno</title>
+<!-- Both the title and every string below are replaced from js/i18n.js
+     on load; what is here is the Czech default, so the shell reads as the
+     game does before any JavaScript has run. -->
+<title>Hide + Seek — jižní Morava a Brno</title>
 <meta name="theme-color" content="#0d1014">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -26,9 +29,10 @@
     </header>
 
     <div id="hud">
-      <div class="stat"><b id="clock">0m</b><span>elapsed</span></div>
-      <div class="stat"><b id="candcount">—</b><span>possible</span></div>
-      <div class="stat"><b id="handcount">0</b><span>hider cards</span></div>
+      <div class="stat"><b id="clock">0m</b><span data-i18n="hud.elapsed">uplynulo</span></div>
+      <div class="stat"><b id="candcount">—</b><span data-i18n="hud.possible">možností</span></div>
+      <!-- Hidden for the whole round when the deck is out of play. -->
+      <div class="stat" id="handstat"><b id="handcount">0</b><span data-i18n="hud.cards">karet skrývače</span></div>
     </div>
 
     <div id="here"></div>
@@ -54,8 +58,8 @@
     <span id="hbtext"></span>
   </div>
   <div class="hb-actions">
-    <button id="hbrandom" class="ghost">Surprise me</button>
-    <button id="hbgo" disabled>Hide here</button>
+    <button id="hbrandom" class="ghost" data-i18n="hb.random">Vyber za mě</button>
+    <button id="hbgo" disabled data-i18n="hb.go">Schovat se tady</button>
   </div>
 </div>
 
@@ -75,52 +79,60 @@
 <div id="start">
   <div class="startcard">
     <h1>Hide <span>+</span> Seek</h1>
-    <p class="tag">You both start at the same random stop. The hider gets a
-      head start to travel and go to ground; then you ask questions, work the
-      map and close the net. Your score is the clock when you find them
-      &mdash; lower is better.</p>
+    <p class="tag" data-i18n="start.tag"></p>
+
+    <!-- First, because it decides what every field under it says. -->
+    <label class="field">
+      <span data-i18n="start.lang">Jazyk</span>
+      <div class="choices row-choices" id="langchoices"></div>
+    </label>
 
     <label class="field">
-      <span>Map</span>
+      <span data-i18n="start.map">Mapa</span>
       <div class="choices" id="mapchoices"></div>
     </label>
 
     <label class="field">
-      <span>Players</span>
+      <span data-i18n="start.players">Hráči</span>
       <div class="choices" id="modechoices"></div>
     </label>
 
     <label class="field" id="namefield" hidden>
-      <span>Who is playing</span>
+      <span data-i18n="start.names">Kdo hraje</span>
       <div class="names">
-        <input id="p1" type="text" maxlength="16" autocomplete="off" placeholder="Player 1">
-        <input id="p2" type="text" maxlength="16" autocomplete="off" placeholder="Player 2">
+        <input id="p1" type="text" maxlength="16" autocomplete="off" data-i18n-ph="start.p1">
+        <input id="p2" type="text" maxlength="16" autocomplete="off" data-i18n-ph="start.p2">
       </div>
     </label>
 
     <label class="field" id="difffield">
-      <span>Hider</span>
+      <span data-i18n="start.hider">Skrývač</span>
       <div class="choices" id="diffchoices"></div>
     </label>
 
     <label class="field">
-      <span>Hiding period <small>(the hider's head start)</small></span>
+      <span data-i18n="start.cards">Karty</span>
+      <div class="choices" id="cardchoices"></div>
+    </label>
+
+    <label class="field">
+      <span data-i18n-html="start.windowLabel">Doba skrývání <small>(náskok skrývače)</small></span>
       <div class="choices row-choices" id="hidechoices"></div>
     </label>
 
     <label class="field">
-      <span>Seed <small>(same seed, same round)</small></span>
+      <span data-i18n-html="start.seedLabel">Seed <small>(stejný seed, stejné kolo)</small></span>
       <input id="seed" type="text" inputmode="numeric">
     </label>
 
-    <button id="play" disabled>Start the run</button>
+    <button id="play" disabled data-i18n="start.play">Spustit hru</button>
 
     <div id="offline">
-      <div id="offstate">Checking offline storage…</div>
+      <div id="offstate" data-i18n="off.checking">Zjišťuji offline úložiště…</div>
       <div id="offbtns" hidden>
-        <button id="offmap" disabled>Map</button>
-        <button id="offphotos" disabled>Map + photos</button>
-        <button id="offclear" class="ghost">Clear</button>
+        <button id="offmap" disabled></button>
+        <button id="offphotos" disabled></button>
+        <button id="offclear" class="ghost" data-i18n="off.btnClear">Smazat</button>
       </div>
       <div id="offbar" hidden><i></i></div>
     </div>

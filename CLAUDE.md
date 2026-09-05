@@ -12,17 +12,22 @@ file, the state shapes, the invariants, and a "where do I change X?" table.
 
 ```bash
 ./run.sh                          # serve on http://localhost:8080/
-./tools/test.sh                   # engine: 60 runs, invariants, coverage (~1 min)
-./tools/uitest.sh                 # UI: a full run and a full 2-player match, per map
+./tools/test.sh                   # dictionary check, then engine: 60 runs, invariants (~1 min)
+./tools/uitest.sh                 # UI: a full run per map, cards off, English, 2-player matches
+node tools/i18ncheck.js           # just the dictionary, both ways (instant)
 ./tools/shot.sh 'index.html?map=brno&seed=7&go=1' out.png   # headless screenshot
 python3 tools/build_map.py all    # rebuild data/*.json from OpenStreetMap
 ```
+
+The browser tools use whichever Chromium is installed; set `CHROME=/path/to/it`
+if they cannot find one.
 
 Run **both** test scripts before calling a change done. They are the contract:
 this game can fail silently — a wrong candidate set still looks like a game.
 
 Useful URLs: `?fresh=1` (clear a stale service worker), `?go=1` (skip the start
-screen), `?players=2`, `?hiding=30`, `?seed=`, `?map=`, `?hider=devious`.
+screen), `?players=2`, `?hiding=30`, `?seed=`, `?map=`, `?hider=devious`,
+`?lang=cs|en`, `?cards=0` (the deck-free game).
 
 ## The one idea
 
@@ -46,8 +51,14 @@ impossible for an answer to eliminate the hider.
    place — text, zoom, popup or Leaflet tooltip.
 7. Every tunable number lives in `js/rules.js`, with the measurement that
    produced it in a comment above it.
-8. A new `js/*.js` file must be added to `SHELL_FILES` in `sw.js`, and `SHELL`
-   bumped.
+8. Every user-facing string lives in `js/i18n.js`, in **both** Czech and
+   English. Never a literal in a `.js` file or in `index.html`; values
+   interpolated into a template must already be through `esc()`.
+   `node tools/i18ncheck.js` fails on a gap in either direction.
+9. A journey's `wait` and `onboard` add up to what it charges, and everything
+   that quotes one reads `state.travel`, which is tied to the clock.
+10. A new `js/*.js` file must be added to `SHELL_FILES` in `sw.js`, and `SHELL`
+    bumped.
 
 ## Style
 
@@ -59,3 +70,6 @@ impossible for an answer to eliminate the hider.
 - No dependencies, no framework, no build step. Keep it that way.
 - ASCII in source comments (`--`, not an em dash); UTF-8 in user-facing strings.
 - Escape interpolated HTML with `esc()` from `js/ui.js`.
+- Czech is the default language and English is the second one. Both are always
+  written together; a key added to one dictionary and not the other fails the
+  test run rather than shipping as the wrong language.

@@ -6,6 +6,10 @@ gets a head start to travel and go to ground; then you ask questions, read the
 map and close the net. Your score is the clock when you find them, and lower is
 better.
 
+It plays in **Czech or English** — the picker is the first thing on the start
+screen — and with or without the hider's deck of cards and curses. See
+[Czech and English](#czech-and-english) and [Cards, or no cards](#cards-or-no-cards).
+
 Play it on your own against the app, or **two of you on one phone**: one hides
 and passes the device over, the other seeks, and whoever is found is found
 somewhere — which is where the next round starts. See
@@ -31,8 +35,11 @@ be needed after an update that changes the service worker itself.
 It also installs to an Android phone — see [On a phone](#on-a-phone).
 
 No build step and nothing to install — plain ES modules, served by Python's
-`http.server`. An internet connection is needed for map tiles; the game data
-itself is two small JSON files in the repo.
+`http.server`, and no framework or dependency to go stale. Any static host will
+do, `python3 -m http.server` included, so a friend who wants to play on their
+own laptop needs the folder and a browser and nothing else. An internet
+connection is needed for map tiles; the game data itself is two small JSON
+files in the repo.
 
 ## What the game actually is
 
@@ -343,12 +350,12 @@ matching target — *"is your stop served by any of the same lines as mine?"* �
 plus a measuring variant comparing how many lines each stop has, which
 separates interchanges from the quiet ends of the network.
 
-In Brno it also decides how you move. **A journey is one ride on one line.**
-The board at your stop lists every line and direction that serves it, when the
-next three leave, and every stop each one reaches, with the time on board and
-the clock time you would arrive. You pick a stop and confirm. To get anywhere
-else you get off at an interchange and board again — which is the whole reason
-an interchange is worth anything.
+In Brno it also decides how you move. **A journey costs what a journey costs:**
+you wait for a real departure, you ride a line that actually goes there, and a
+change costs another wait rather than a flat fee. The board at your stop lists
+every line and direction that serves it, when the next three leave, and every
+stop each one reaches, with the time on board and the clock time you would
+arrive.
 
 The timetable is the smallest thing that can be read off a board: every line
 runs on a fixed headway from its terminus, so a stop *N* minutes down the line
@@ -373,12 +380,60 @@ Runs got longer, and it is worth being plain about how much. A Brno run against
 a fair hider went from a median clock of **245 minutes to 320**, and from 9
 questions to 18. Waiting for vehicles is most of that, and it is realism working
 as intended. If a run runs long the dials are `headway`, `askMinutes`, and
-whether a change of line has to be a separate move at all.
+turning the cards off, which is worth most of it — see
+[Cards, or no cards](#cards-or-no-cards).
 
-Everything that estimates a journey goes through the same search, so the number
-the map shows and the price the board charges are the same arithmetic. Clicking
-a distant station still works: the popup offers the **first leg** towards it and
-says how many legs the whole thing is.
+### Who does the connecting
+
+For a while a move was *one ride on one line*, full stop. Clicking a station
+off your line was refused — "no service from here goes there, about 28 minutes
+with a change, ride to an interchange first" — and you got there by hand, a leg
+at a time, choosing each interchange yourself.
+
+It is a lovely idea and it is genuinely how the real game feels. It is also
+tiring in a way that does not pay for itself. You are hand-routing a network
+whose timetable you cannot see, three taps per leg, and the thing it teaches —
+that a change is not free — it teaches in the first five minutes and then
+charges tuition for the rest of the round.
+
+So the engine does the connecting now. **Any stop on the map is one tap.** What
+did *not* change is the price: `timetableTimes` was always a time-dependent
+search over the same departures, so the itinerary it finds is priced exactly as
+doing it by hand was. Nothing about the balance moved; what moved is who has to
+plan it.
+
+What the restriction did give you for free was a running education in what a
+change costs, and that must not vanish with it. So every screen that offers a
+journey is also the ticket for it:
+
+```
+Brno, ÚAN Zvonařka                      Brno-střed · 204 m · still possible
+
+16 min moving · 11 min waiting · 1 change
+  trolleybus 33 → Černovičky        departs 08:14 · 4 min on board · 4 min waiting
+  bus 601 → Brno, ÚAN Zvonařka      departs 08:25 · 12 min on board · 7 min waiting
+
+                       [ Travel here — 27 min ]
+```
+
+The split is the point. Twenty-seven minutes to cross the city tells you very
+little; eleven of them standing on a platform tells you to look at the board and
+see whether something else is leaving sooner. `tools/test.sh` asserts that the
+split adds up to the price charged and that the legs actually chain from where
+you stand, because a confident wrong itinerary is exactly the kind of thing
+nothing else in this game would notice.
+
+Finding this also turned up a real bug that the old model had been hiding.
+`state.travel` — what you can reach, from here, *now* — was refreshed after a
+journey and nowhere else, so after asking a question it still quoted departures
+from several minutes earlier. While it was only the estimate on the map that was
+merely optimistic, and the real price came from re-reading the board. The moment
+a tap on a distant stop started charging what it says, it became a quote for
+trams that had already gone. It is a getter tied to the clock now.
+
+The departure board is still there, and still the only way to see what is
+actually leaving from under your feet — which is how you decide whether waiting
+four minutes for the tram beats walking.
 
 Two details worth knowing. Walking one stop is always offered, at two and a
 half times the riding time — not as a convenience but because a handful of
@@ -387,6 +442,85 @@ places the seeker can arrive at and never leave, or never reach, which would
 let a hider sit somewhere unfindable. And a map with no `headway` in `RULES`
 keeps the old free travel: the region's trains do not run every five minutes,
 and pretending otherwise would be a lie dressed as precision.
+
+## Cards, or no cards
+
+The rulebook's hider does two things: they answer questions, and they work a
+deck. The deck is time bonuses, vetoes, Randomize, Move, and twelve curses —
+half of which, here, are a minigame you have to clear before the run continues.
+
+It is a good half of the game and it is not always the half you want. It roughly
+doubles the length of a round, and it can decide one on a die: the Endless
+Tumble is five minutes a throw until a 5 or a 6, and the Hidden Hangman can cost
+you more than every question you asked. On a tram, with forty minutes before
+somebody has to be somewhere, that is the wrong game.
+
+**Pure deduction** turns the whole deck off. Nothing else changes — the same
+questions at the same prices, the same candidate set, the same hiding window,
+the same journeys — so the score becomes the clock and the clock becomes
+entirely your own doing. Measured over ten runs on each map, a Brno round drops
+from a median of about 180 minutes to **98**, and South Moravia from 257 to
+**162**.
+
+The flag is a single `cards` on the game state, and every card path in the
+engine returns early on it; the hider never builds a deck at all. Both, rather
+than either: an empty hand would produce a quiet round on its own, so a guard
+that had stopped working would look exactly like the feature working. The
+engine test checks that the deck is *unbuilt*, that nothing card-shaped appears
+in the log, and that the final score equals the clock to the minute.
+
+## Czech and English
+
+The maps are Czech, the station names are Czech, and the people playing it are
+mostly Czech, so the game opens in Czech. English is the second language, kept
+because the rulebook this implements is published in English — when a wording
+here has drifted from what the book actually says, that is the side it shows up
+on. The picker is the first field on the start screen, and `?lang=cs` / `?lang=en`
+sets it directly.
+
+Both languages live in one file, `js/i18n.js`, with the two dictionaries side by
+side. Side by side because they have to stay in step and a missing key is
+invisible at run time: `t()` falls back to the other language and then to the
+key itself, so a typo ships as an English sentence in the middle of a Czech
+round, or as `res.matchTitle` sitting in a result sheet. `tools/i18ncheck.js`
+runs first in the test suite and fails on a key one side has and the other does
+not, a key the code asks for that nobody wrote, a key nobody asks for that got
+left behind after a screen was rewritten, or a `{value}` present on one side
+only.
+
+The interesting part is Czech grammar, and the interesting part of that is that
+it could not be solved by translating sentences one at a time. Two things had to
+go into the dictionary that English never needed:
+
+**Plurals have three forms.** One stop, two-to-four stops, five-or-more stops:
+*zastávka*, *zastávky*, *zastávek*. So a placeholder can select as well as
+print — `"{n} {n:zastávka|zastávky|zastávek}"` — and the length of the list says
+which rule to apply, three for Czech and two for English. No plural library, no
+ICU MessageFormat, about fifteen lines.
+
+**Adjectives agree with the noun.** "Is your nearest X the same as mine?" is one
+sentence in English and three in Czech, because *the same* has to agree with the
+gender of X: *stejný jako můj* for a brewery, *stejná jako moje* for a river,
+*stejné jako moje* for a cinema. The obvious fix — write out all thirty-three
+sentences — is a lot of dictionary to keep in step. Instead a POI category
+carries its gender alongside its name, and the same selector picks on it:
+
+```js
+"q.matchPoi.text": "Je {g:tvůj nejbližší|tvoje nejbližší|tvoje nejbližší} {label} " +
+                   "{g:stejný jako můj|stejná jako moje|stejné jako moje}?"
+```
+
+Cases were dodged rather than solved. Czech declines the noun itself, so
+*"of all the hospitals within 4 km"* would need a genitive plural, and a case
+table per category is a real translation layer. Every question is phrased so
+the label stays in the nominative instead — *"nemocnice do 4 km od tebe — která
+je ti nejblíž?"* — which reads the way a person would say it anyway. Three
+fields per category, not twelve.
+
+Numbers are language too: `formatDuration` and `formatKm` read their
+punctuation from the dictionary, so 3.2 km is *3,2 km* and 1h 05m is *1 h 05
+min*. Place names are never translated and are always collated as Czech, in
+either language — an English sort puts Židenice before Řečkovice.
 
 ## Two hiders
 
@@ -517,6 +651,7 @@ ARCHITECTURE.md       map of the code: every file, the state shapes, the
 CLAUDE.md             the short version, for coding agents
 index.html            shell
 js/rules.js           every tunable number, and why it has that value
+js/i18n.js            every user-facing string, Czech and English side by side
 js/timetable.js       departures, the board, and time-dependent journeys
 js/questions.js       the question catalogue
 js/data.js            map loading and line-aware routing
@@ -535,6 +670,7 @@ tools/build_map.py    rebuilds them from OpenStreetMap
 tools/osmlib.py       shared OSM fetching and geometry
 tools/tune_tentacles.py   measures how strong each Tentacles radius is
 tools/survey_pois.py      scores candidate POI categories as questions
+tools/i18ncheck.js    the two dictionaries against each other and the code
 tools/test.sh         engine self-test, across every map
 tools/uitest.sh       drives the real interface: a whole run, a whole
                       two-player match on each map, and the offline nag
@@ -600,28 +736,37 @@ Nothing else is map-specific.
 ## Tests
 
 ```
-./tools/test.sh      # 60 automated runs across both maps, invariants, coverage
+./tools/test.sh      # the dictionary, then 60 automated runs across both maps
 ./tools/uitest.sh    # clicks through the real UI end to end, on each map
 ```
 
 The engine test asserts the things that would ruin the game silently: the hider
 is never eliminated by their own answer, the candidate set never empties, the
 seeker's view and the hider's view never disagree, every candidate is inside the
-head start the seeker was told about, and every run terminates. It also reports
+head start the seeker was told about, every journey's wait and time on board add
+up to what it charges, a deck-free run really is deck-free, and every run
+terminates. It also reports
 which curses and powerups actually fired, so a feature that has quietly become
 unreachable shows up as a missing line rather than as code that looks
 implemented — and how many distinct stops thirty rounds started at, because "the
 start is random" is the kind of claim that fails silently by being the hub every
 time.
 
-`uitest.sh` also drives a whole two-player match per map, through the real
-handover and hiding screens. What it is really checking is that the seeker is
+`uitest.sh` runs the whole thing once per map, once more with the cards off, and
+once more in English — the assertions read the dictionary rather than English
+literals, so a test that only ever passed in one language is not possible. It
+also drives a whole two-player match per map, through the real handover and
+hiding screens. What it is really checking is that the seeker is
 handed nothing they should not have: not the hiding place in the handover text,
 and not a tooltip left open on the map.
 
 Both harnesses give Chromium a throwaway profile per run. That is not
 fastidiousness: with a shared profile the module cache served stale JavaScript,
-and a run once passed against a function that did not exist.
+and a run once passed against a function that did not exist. They also find
+Chromium by whichever name it goes by on the machine — `chromium-browser` on
+the Ubuntu snap, `chromium` on Arch, `google-chrome` elsewhere, or whatever
+`CHROME` points at. Hardcoding one meant the suite silently did not run at all
+on the others, which from the outside looks exactly like it passing.
 
 ## Known limits
 
@@ -664,6 +809,12 @@ and a run once passed against a function that did not exist.
   minutes burned, because scoring on candidates alone books the busiest
   interchange one minute away and curses nobody. The hider will not cast it
   below 60 candidates, where handing over a three-stop radius is suicide.
+- The two languages are complete, but only Czech and English. Nothing in
+  `js/i18n.js` is specific to those two — a third dictionary is a third object
+  and an entry in `LANGS` — but every string would have to be written again,
+  and the checker will insist on all 367 of them.
+- Curse minigames are keyboard-driven where the rulebook is physical, and the
+  Labyrinth still wants arrow keys, which a phone does not have.
 - Single round, seeker side only. The show alternates and compares times.
 
 Map data © OpenStreetMap contributors. Elevation SRTM via OpenTopoData.
