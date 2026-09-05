@@ -16,6 +16,10 @@ const $ = (id) => document.getElementById(id);
 
 export class UI {
   /**
+   * @param {object}  handlers  ask, travel, challenge, nextRound, newRun --
+   *   everything that changes the world, so that the panel itself changes
+   *   nothing. `newRun` rather than a reload in here: starting again also
+   *   means discarding the saved round, which is a rule, not presentation.
    * @param {object}  [opts.match]  the pass-and-play match this round belongs
    *   to, if any. Only the result sheet cares: a round inside a match ends in
    *   standings and a handover rather than in "New run".
@@ -593,7 +597,7 @@ export class UI {
       const again = document.createElement("button");
       again.className = "btn";
       again.textContent = t("res.new");
-      again.addEventListener("click", () => location.reload());
+      again.addEventListener("click", () => this.on.newRun());
       const close = document.createElement("button");
       close.className = "btn ghost";
       close.textContent = t("res.look");

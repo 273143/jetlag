@@ -30,6 +30,10 @@ run "english / brno" "tools/uitest.html?map=brno&lang=en"
 for MAP in south-moravia brno; do
   run "two players / $MAP" "tools/2ptest.html?map=$MAP"
 done
+# Closing the app mid-round and coming back to it, through the real start
+# screen -- the failure that lost a round on a phone.
+run "save and resume" "tools/resumetest.html?map=brno"
+run "save and resume / two players" "tools/resumetest.html?map=brno&players=2"
 # The offline nag in front of the Start button. Skips its own assertions where
 # the browser has no working Cache API -- see the note in the page.
 run "offline nag" "tools/nagtest.html?map=brno"

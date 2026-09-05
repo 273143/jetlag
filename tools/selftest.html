@@ -12,7 +12,8 @@
 //   3. a seeker that keeps asking and searching always finishes
 //   4. a journey's wait and time on board add up to what it charges
 //   5. with the deck out of play, no card ever fires and the score is the clock
-//   6. nothing throws
+//   6. a saved round comes back identical, and carries on identically
+//   7. nothing throws
 //
 // Run via tools/test.sh.
 
@@ -20,6 +21,7 @@ import { loadWorld } from "../js/data.js";
 import { newGame, ask, travel, challengeStep, askBlocker, travelBlocker, finalScore, seeker, journey } from "../js/game.js";
 import { RULES } from "../js/rules.js";
 import { mulberry32 } from "../js/deck.js";
+import { snapshot, restore } from "../js/save.js";
 import { haversine } from "../js/geo.js";
 import { MAPS } from "../js/data.js";
 
@@ -222,6 +224,88 @@ function checkInvariants(state, difficulty, seed) {
   }
 }
 
+/**
+ * A half-played round survives being written down and read back.
+ *
+ * Checked in two stages, because only the second one is worth much. Comparing
+ * the two states straight after the round trip catches a field that was not
+ * copied. Then both copies are driven onwards through exactly the same
+ * decisions, and they have to stay identical -- which is what catches the
+ * things a field-by-field comparison cannot see: a random stream restarted
+ * from its seed instead of its position, a deck reshuffled, a hider that has
+ * forgotten which stops it had already ruled out. Those all look perfect at
+ * the moment of restore and diverge on the next card drawn.
+ */
+function checkSaveRestore(seed, difficulty, cards) {
+  const label = `save/${difficulty}${cards ? "" : "/nocards"}/${seed}`;
+  const setup = { lang: "cs", mapId: world.id, players: "solo",
+                  difficulty, cards, hidingMinutes: null, baseSeed: seed, match: null };
+
+  const a = newGame(world, { difficulty, seed, cards });
+  drive(a, mulberry32(seed ^ 0x51ed270b), 14);
+  if (a.status !== "playing") return;          // found already; nothing to save
+
+  // Through JSON, because that is what local storage does to it.
+  const snap = JSON.parse(JSON.stringify(snapshot(a, setup)));
+  const b = restore(world, snap);
+  if (digest(a) !== digest(b)) fail(`${label}: the round came back different`);
+
+  drive(a, mulberry32(seed ^ 0x2c9277b5), 30);
+  drive(b, mulberry32(seed ^ 0x2c9277b5), 30);
+  if (digest(a) !== digest(b)) fail(`${label}: the rounds diverged after being resumed`);
+}
+
+/** Everything about a round that a player could notice. Compared as one
+ *  string so a difference anywhere is one failure, not thirty. */
+function digest(state) {
+  return JSON.stringify({
+    clock: Math.round(state.clock * 1e6),
+    seekerId: state.seekerId,
+    previous: state.previousStation,
+    status: state.status,
+    candidates: state.candidates.map((s) => s.id),
+    checked: [...state.checked].sort((x, y) => x - y),
+    asked: [...state.asked].sort(),
+    banned: [...state.bannedQuestions].sort(),
+    effects: state.effects,
+    challenge: state.challenge && { ...state.challenge, guessed: [...(state.challenge.guessed ?? [])] },
+    pendingThermo: state.pendingThermo,
+    // The log carries what the hider said and which curses landed, so it is
+    // the real test of whether the deck came back in the same order.
+    log: state.log.map((e) => `${Math.round(e.clock)}|${e.who}|${e.text}`),
+    hand: state.hider.hand.map((c) => c.uid).sort((x, y) => x - y),
+    deck: state.hider.deck.map((c) => c.uid),
+    discard: state.hider.discard.map((c) => c.uid).sort((x, y) => x - y),
+    committed: state.hider.committed?.id ?? null,
+    hiderCandidates: state.hider.candidates.map((s) => s.id),
+  });
+}
+
+/** A few turns of plausible play, decided entirely by `rng`, so two copies of
+ *  the same round given the same rng make the same moves. */
+function drive(state, rng, turns) {
+  for (let i = 0; i < turns && state.status === "playing"; i++) {
+    let guard = 0;
+    while (state.challenge && guard++ < 200) {
+      const c = state.challenge;
+      if (c.type === "hangman") challengeStep(state, "abcdefghijklmnopqrstuvwxyz"[Math.floor(rng() * 26)]);
+      else if (c.type === "tumble") challengeStep(state, null);
+      else if (c.type === "labyrinth") challengeStep(state, mazeStep(c.maze, c.at));
+      else break;
+    }
+    const forced = state.effects.forcedReturn ?? state.effects.mustVisit;
+    const askable = state.questions.filter((q) => !askBlocker(state, q));
+    if (forced != null) { travel(state, forced); continue; }
+    if (state.pendingThermo || !askable.length || rng() < 0.3) {
+      const pick = state.candidates[Math.floor(rng() * state.candidates.length)];
+      if (!pick || pick.id === state.seekerId) continue;
+      travel(state, pick.id);
+      continue;
+    }
+    ask(state, askable[Math.floor(rng() * askable.length)]);
+  }
+}
+
 const seen = new Map();
 const tally = (k) => seen.set(k, (seen.get(k) || 0) + 1);
 
@@ -281,6 +365,21 @@ const med = (a) => a.slice().sort((x, y) => x - y)[Math.floor(a.length / 2)];
 log(`opening position: ${starts.size} different starting stops over 30 rounds, ` +
     `median ${med(openings)} stops in play out of ${world.stations.length}`);
 if (starts.size < 10) fail(`only ${starts.size} distinct starting stops in 30 rounds`);
+
+// Saving and resuming, across both hider personalities and both card modes:
+// the deck is most of what a snapshot has to carry, and a devious hider that
+// has not committed is the awkward case.
+for (let seed = 1; seed <= 6; seed++) {
+  for (const difficulty of ["fair", "devious"]) {
+    try {
+      checkSaveRestore(seed, difficulty, true);
+      checkSaveRestore(seed, difficulty, false);
+    } catch (err) {
+      fail(`save/${difficulty}/${seed}: threw — ${err && err.stack ? err.stack.split("\n").slice(0, 3).join(" | ") : err}`);
+    }
+  }
+}
+log(`save and resume: 24 rounds written down, read back and replayed`);
 
 // The pure-deduction game, on the same map and the same seeds.
 //

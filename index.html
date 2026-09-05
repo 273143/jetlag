@@ -79,6 +79,18 @@
 <div id="start">
   <div class="startcard">
     <h1>Hide <span>+</span> Seek</h1>
+
+    <!-- A round that was left half-played. Above everything else, because if
+         it is there it is almost certainly what you opened the app for. -->
+    <div id="resume" hidden>
+      <b data-i18n="resume.title">Rozehraná hra</b>
+      <span id="resumewhat"></span>
+      <div class="row">
+        <button id="resumego" data-i18n="resume.go">Pokračovat</button>
+        <button id="resumedrop" class="ghost" data-i18n="resume.discard">Zahodit</button>
+      </div>
+    </div>
+
     <p class="tag" data-i18n="start.tag"></p>
 
     <!-- First, because it decides what every field under it says. -->

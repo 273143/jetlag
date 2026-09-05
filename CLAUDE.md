@@ -57,7 +57,10 @@ impossible for an answer to eliminate the hider.
    `node tools/i18ncheck.js` fails on a gap in either direction.
 9. A journey's `wait` and `onboard` add up to what it charges, and everything
    that quotes one reads `state.travel`, which is tied to the clock.
-10. A new `js/*.js` file must be added to `SHELL_FILES` in `sw.js`, and `SHELL`
+10. A round survives the app closing. A new field on the game state must be
+    added to `snapshot`/`restore` in `js/save.js`, and anything consuming
+    randomness must use a generator whose position is saved.
+11. A new `js/*.js` file must be added to `SHELL_FILES` in `sw.js`, and `SHELL`
     bumped.
 
 ## Style

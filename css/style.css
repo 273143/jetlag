@@ -344,6 +344,28 @@ html, body {
 #play { width: 100%; padding: 12px; font-size: 15px; }
 .credit { color: var(--dim); font-size: 11px; margin-top: 16px; }
 
+/* A round left half-played, offered at the top of the start screen. Sits in
+   the candidate amber rather than in the panel grey: it is the one thing on
+   this card that is about what already happened. */
+#resume[hidden] { display: none; }
+#resume {
+  display: grid; gap: 4px; margin: 0 0 20px;
+  padding: 13px 14px; border-radius: 10px;
+  background: var(--panel); border: 1px solid var(--candidate);
+}
+#resume > b { font-size: 14px; }
+#resume > span { font-size: 12px; color: var(--dim); }
+#resume .row { margin-top: 7px; }
+#resume button {
+  font: inherit; font-size: 14px; font-weight: 600; cursor: pointer;
+  background: var(--candidate); color: #24190a;
+  border: 0; border-radius: 8px; padding: 9px 16px;
+}
+#resume button.ghost {
+  background: var(--panel-2); color: var(--dim);
+  border: 1px solid var(--line); font-weight: 400;
+}
+
 /* --------------------------------------------- the hiding period, 2 player */
 
 /* The hider is not seeking, so the seeker's furniture -- questions, log,

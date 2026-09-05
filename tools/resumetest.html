@@ -1,0 +1,289 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>resumetest</title>
+<style>body{margin:0;background:#0d1014;color:#e8ecf1;font:13px system-ui}
+iframe{width:1400px;height:820px;border:0;display:block}
+#out{padding:8px 12px;white-space:pre-wrap;font-family:monospace}</style>
+</head>
+<body>
+<div id="out">driving…</div>
+<iframe id="f"></iframe>
+<script type="module">
+// Closing the app and coming back.
+//
+// This is the failure it exists for, played out exactly: a round is part
+// played, the page goes away, and the app is opened again from cold. Driven
+// through the real start screen rather than by calling restore() directly,
+// because the engine round trip is already covered by tools/selftest.html and
+// what is untested here is everything around it -- that the snapshot is
+// actually written after an action, that the start screen notices it, that
+// Continue rebuilds a playable round, and that Discard really discards.
+//
+// A reload of the iframe is the honest version of "closed the app": it is a
+// new document, a new module graph and a new game, sharing only what local
+// storage kept.
+import { t, setLang } from "../js/i18n.js";
+
+const params = new URLSearchParams(location.search);
+const LANG = params.get("lang") || "cs";
+const MAP = params.get("map") || "brno";
+setLang(LANG);
+
+const out = document.getElementById("out");
+const lines = [];
+const log = (s) => { lines.push(s); out.textContent = lines.join("\n"); console.log(s); };
+let bad = 0;
+const check = (cond, what) => { if (!cond) { bad++; log("FAIL: " + what); } else log("ok: " + what); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (fn, tries = 120) => {
+  for (let i = 0; i < tries; i++) { if (fn()) return true; await sleep(100); }
+  return false;
+};
+
+const f = document.getElementById("f");
+const open = (url) => new Promise((done) => { f.onload = () => done(); f.src = url; });
+
+/** What a player would notice about the round in front of them. */
+function digest(w) {
+  const s = w.__debug.state;
+  return JSON.stringify({
+    clock: Math.round(s.clock * 1e6),
+    seekerId: s.seekerId,
+    status: s.status,
+    candidates: s.candidates.map((c) => c.id),
+    checked: [...s.checked].sort((a, b) => a - b),
+    asked: [...s.asked].sort(),
+    hider: s.hider.committed?.id ?? null,
+    hand: s.hider.hand.map((c) => c.uid).sort((a, b) => a - b),
+    effects: s.effects,
+    // A curse minigame is the most stateful thing that can be half finished
+    // when the app goes away, so it is part of what has to come back.
+    challenge: s.challenge && { ...s.challenge, guessed: [...(s.challenge.guessed ?? [])] },
+    log: s.log.map((e) => `${Math.round(e.clock)}|${e.who}|${e.text}`),
+  });
+}
+
+/** Shortest-path step out of a maze. A random walk in a 7x7 maze does not
+ *  reliably escape inside any sane step budget, which reads as a bug in
+ *  whatever the test was actually checking. */
+function mazeStep(maze, at) {
+  const { w, h, cells } = maze, goal = w * h - 1;
+  const DIRS = [{ k: "N", bit: 1, d: -w }, { k: "E", bit: 2, d: 1 },
+                { k: "S", bit: 4, d: w }, { k: "W", bit: 8, d: -1 }];
+  const prev = new Map([[at, null]]), queue = [at];
+  while (queue.length) {
+    const cur = queue.shift();
+    if (cur === goal) break;
+    for (const dir of DIRS) {
+      if (!(cells[cur] & dir.bit)) continue;
+      const nxt = cur + dir.d;
+      if (nxt < 0 || nxt >= w * h || prev.has(nxt)) continue;
+      prev.set(nxt, { from: cur, k: dir.k }); queue.push(nxt);
+    }
+  }
+  let node = goal;
+  while (prev.get(node) && prev.get(node).from !== at) node = prev.get(node).from;
+  return prev.get(node) ? prev.get(node).k : "N";
+}
+
+/** Step out of whatever curse minigame is in the way. */
+function clearChallenge(w) {
+  const s = w.__debug.state;
+  let guard = 0;
+  while (s.challenge && guard++ < 400) {
+    const c = s.challenge;
+    if (c.type === "hangman") w.__debug.challengeStep(s, "etaoinshrdlcumwfgypbvkjxqz"[guard % 26]);
+    else if (c.type === "tumble") w.__debug.challengeStep(s, null);
+    else if (c.type === "labyrinth") w.__debug.challengeStep(s, mazeStep(c.maze, c.at));
+    else break;
+  }
+  w.__debug.ui.refresh();
+  return !s.challenge;
+}
+
+async function run() {
+  // ---- play a bit of a round --------------------------------------------
+  await open(`../index.html?map=${MAP}&seed=7&hider=fair&lang=${LANG}&go=1`);
+  let w = f.contentWindow, d = f.contentDocument;
+  check(await until(() => w.__debug?.phase === "seeking"), "a round started");
+  if (!w.__debug) return done();
+
+  const { state, ui } = w.__debug;
+  for (const cat of ["radar", "tentacles"]) {
+    if (state.challenge) break;                       // a curse; the clock is enough
+    const tab = [...d.querySelectorAll("#cats button")].find((b) => b.dataset.cat === cat);
+    tab.click(); await sleep(30);
+    const q = [...d.querySelectorAll("#questions .q")].find((b) => !b.disabled);
+    if (q) { q.click(); await sleep(60); }
+  }
+  if (!state.challenge && state.status === "playing") {
+    const target = state.candidates.find((c) => c.id !== state.seekerId);
+    if (target) { ui.on.travel(target); await sleep(80); }
+  }
+  check(state.clock > 0, `played ${Math.round(state.clock)} minutes of a round`);
+  check(state.log.length > 1, `${state.log.length} entries in the log`);
+  const before = digest(w);
+  const wasFound = state.hider.committed?.name;
+  const hadChallenge = state.challenge?.type ?? null;
+  log(hadChallenge ? `   (a ${hadChallenge} curse was open when the app closed)`
+                   : "   (no curse open when the app closed)");
+
+  // ---- close the app ----------------------------------------------------
+  await open(`../index.html?map=${MAP}&lang=${LANG}`);
+  w = f.contentWindow; d = f.contentDocument;
+  const $ = (id) => d.getElementById(id);
+  check(await until(() => $("play") && !$("play").disabled), "the app came back up cold");
+  check(!w.__debug, "no round is running yet");
+  check(!$("resume").hidden, "the start screen offers the round back");
+  check($("resumewhat").textContent.includes(t(`map.${MAP}.name`)),
+        `it says which round (${$("resumewhat").textContent})`);
+
+  // ---- pick it back up ---------------------------------------------------
+  $("resumego").click();
+  check(await until(() => w.__debug?.phase === "seeking"), "Continue reopened the round");
+  if (!w.__debug) return done();
+  check(digest(w) === before, "it is the same round, down to the log and the hider's hand");
+  check(w.__debug.state.hider.committed?.name === wasFound,
+        `the hider is still at ${wasFound}`);
+  check(d.querySelectorAll("#log .entry").length > 1, "the log was repainted, not lost");
+  check((w.__debug.state.challenge?.type ?? null) === hadChallenge,
+        hadChallenge ? `the half-finished ${hadChallenge} came back with it`
+                     : "no curse appeared out of nowhere");
+
+  // And it is a round, not a picture of one. A curse minigame legitimately
+  // blocks travel, so clear whatever came back with the round first.
+  if (w.__debug.state.challenge) {
+    check(clearChallenge(w), `the resumed ${hadChallenge} can be played out`);
+    await sleep(60);
+  }
+  const clock = w.__debug.state.clock;
+  const goal = w.__debug.state.candidates.find((c) => c.id !== w.__debug.state.seekerId);
+  if (goal) {
+    const res = w.__debug.travel(w.__debug.state, goal.id);
+    w.__debug.ui.refresh();
+    await sleep(60);
+    check(w.__debug.state.clock > clock,
+          `a resumed round can still be played${res.ok ? "" : ` (refused: ${res.reason})`}`);
+  }
+
+  // ---- and Discard really discards ---------------------------------------
+  await open(`../index.html?map=${MAP}&lang=${LANG}`);
+  w = f.contentWindow; d = f.contentDocument;
+  const $$ = (id) => d.getElementById(id);
+  check(await until(() => $$("play") && !$$("play").disabled), "back to the start screen");
+  check(!$$("resume").hidden, "the resumed round was saved again as it was played");
+  $$("resumedrop").click();
+  check($$("resume").hidden, "Discard takes the offer away");
+
+  await open(`../index.html?map=${MAP}&lang=${LANG}`);
+  w = f.contentWindow; d = f.contentDocument;
+  const $3 = (id) => d.getElementById(id);
+  check(await until(() => $3("play") && !$3("play").disabled), "and once more from cold");
+  check($3("resume").hidden, "the discarded round is gone for good");
+  // Start may put the offline nag up first -- that path is tools/nagtest.html's
+  // business; here it only has to be true that pressing it does something.
+  $3("play").click();
+  check(await until(() => !$3("app").hidden || !$3("modal").hidden),
+        "a new game still starts");
+  done();
+}
+
+/**
+ * The same thing for a pass-and-play match, where there is more to lose: two
+ * people, several rounds of standings, and a hiding phase that happens before
+ * there is any game state at all.
+ */
+async function runMatch() {
+  const P1 = t("start.p1"), P2 = t("start.p2");
+
+  // ---- closed while the hider is still choosing --------------------------
+  await open(`../index.html?map=${MAP}&seed=11&players=2&lang=${LANG}&go=1`);
+  let w = f.contentWindow, d = f.contentDocument;
+  check(await until(() => w.__debug?.phase === "hiding"), "a match opened into the hiding phase");
+  if (!w.__debug) return done();
+
+  await open(`../index.html?map=${MAP}&lang=${LANG}`);
+  w = f.contentWindow; d = f.contentDocument;
+  await until(() => d.getElementById("play") && !d.getElementById("play").disabled);
+  check(!d.getElementById("resume").hidden, "a round closed mid-hiding is still offered back");
+  check(d.getElementById("resumewhat").textContent.includes(P1),
+        `it names whoever was hiding (${d.getElementById("resumewhat").textContent})`);
+  d.getElementById("resumego").click();
+  check(await until(() => w.__debug?.phase === "hiding"),
+        "Continue puts the hider back in front of the map");
+  check(w.__debug.match?.round === 1, "in the round they were in");
+
+  // ---- hide, hand over, and play a little --------------------------------
+  d.getElementById("hobtn").click();
+  await sleep(150);
+  const range = w.__debug.range;
+  const pick = range.stops[Math.floor(range.stops.length / 2)];
+  w.__debug.gmap.markers.get(pick.id).fire("click");
+  await sleep(60);
+  d.getElementById("hbgo").click();
+  await sleep(300);
+  d.getElementById("hobtn").click();
+  check(await until(() => w.__debug?.phase === "seeking"), "the seeker took over");
+  if (w.__debug.phase !== "seeking") return done();
+
+  const state = w.__debug.state;
+  if (!state.challenge) {
+    const tab = [...d.querySelectorAll("#cats button")].find((b) => b.dataset.cat === "radar");
+    tab.click(); await sleep(30);
+    const q = [...d.querySelectorAll("#questions .q")].find((b) => !b.disabled);
+    if (q) { q.click(); await sleep(60); }
+  }
+  const before = digest(w);
+  check(state.clock > 0, `played ${Math.round(state.clock)} minutes of round 1`);
+
+  // ---- closed mid-round --------------------------------------------------
+  await open(`../index.html?map=${MAP}&lang=${LANG}`);
+  w = f.contentWindow; d = f.contentDocument;
+  await until(() => d.getElementById("play") && !d.getElementById("play").disabled);
+  const what = d.getElementById("resumewhat").textContent;
+  check(what.includes(P1) && what.includes(P2), `the offer names both players (${what})`);
+  d.getElementById("resumego").click();
+  check(await until(() => w.__debug?.phase === "seeking"), "the match round came back");
+  check(digest(w) === before, "identical, and the hiding place with it");
+  check(w.__debug.match.names.join() === [P1, P2].join() && w.__debug.match.round === 1,
+        "the match itself came back, players and round");
+  check(d.getElementById("mode").textContent.includes(P1), "the panel still says whose round it is");
+
+  // ---- play it out, then close on the standings --------------------------
+  const s2 = w.__debug.state;
+  for (let i = 0; i < 400 && s2.status === "playing"; i++) {
+    if (s2.challenge) { clearChallenge(w); continue; }
+    const forced = s2.effects.forcedReturn ?? s2.effects.mustVisit;
+    const goal = forced != null ? forced : (s2.candidates[0] ?? s2.world.stations[0]).id;
+    if (goal === s2.seekerId) break;
+    w.__debug.ui.on.travel(s2.world.byId.get(goal));
+    await sleep(0);
+  }
+  check(s2.status === "found", `round 1 finished at ${s2.hider.committed?.name}`);
+  await sleep(200);
+  check(w.__debug.match.results.length === 1, "the round was recorded in the match");
+  const scored = Math.round(w.__debug.match.results[0].total);
+
+  await open(`../index.html?map=${MAP}&lang=${LANG}`);
+  w = f.contentWindow; d = f.contentDocument;
+  await until(() => d.getElementById("play") && !d.getElementById("play").disabled);
+  check(!d.getElementById("resume").hidden, "a finished round is still offered, so the score is not lost");
+  d.getElementById("resumego").click();
+  check(await until(() => w.__debug?.phase === "seeking"), "and it reopens");
+  check(await until(() => !d.getElementById("modal").hidden), "on the standings");
+  check(w.__debug.match.results.length === 1 &&
+        Math.round(w.__debug.match.results[0].total) === scored,
+        `with round 1 still scored at ${scored} minutes`);
+  check(d.querySelectorAll("#sheet .standings .srow").length === 2, "and both players listed");
+  done();
+}
+
+function done() {
+  log(bad ? `\n${bad} FAILURE(S)` : "\nsave and resume all good");
+  document.title = bad ? `FAIL:${bad}` : "PASS";
+}
+
+if (params.get("players") === "2") runMatch(); else run();
+</script>
+</body>
+</html>

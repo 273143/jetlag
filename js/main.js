@@ -13,7 +13,11 @@ import { handoff, hidePhase } from "./hidephase.js";
 import { formatDuration } from "./geo.js";
 import { packUrls, estimateMb, packStatus, downloadPack, clearPack } from "./offline.js";
 import { keepAwake, releaseWake } from "./wakelock.js";
-import { LANGS, initLang, setLang, t, applyStatic } from "./i18n.js";
+import { LANGS, initLang, setLang, t, applyStatic, currentLang } from "./i18n.js";
+import {
+  snapshot, restore, restoreMatch,
+  write as writeSave, read as readSave, clear as clearSave,
+} from "./save.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -35,6 +39,28 @@ let gmap = null;
 let ui = null;
 let match = null;
 let baseSeed = 0;
+
+// ---- keeping the round -------------------------------------------------
+
+// Everything about how this round was set up, which is half of what a
+// snapshot is; the other half is whatever has happened since. See js/save.js.
+const setup = () => ({
+  lang: currentLang(), mapId: world?.id, players, difficulty, cards,
+  hidingMinutes, baseSeed, match,
+});
+
+/** Write the round down. Called after every action that moves the state, so
+ *  there is never more than one click of progress to lose. */
+function keep(state) {
+  if (world) writeSave(snapshot(state, setup()));
+}
+
+// A phone can kill a backgrounded tab without warning and without running
+// anything. Nothing here should be new -- every action saves already -- but
+// this is the one line that covers a handler somebody forgets to add later.
+addEventListener("pagehide", () => {
+  if (window.__debug?.phase === "seeking") keep(window.__debug.state);
+});
 
 // ---- language ----------------------------------------------------------
 
@@ -71,6 +97,7 @@ function repaintStart() {
   for (const b of cardChoices.children) fillChoice(b, `cards.${b.dataset.cards}`);
   for (const b of diffChoices.children) fillChoice(b, `diff.${b.dataset.diff}`);
   selectPlayers(players);
+  showResumeCard();
   if (!world) return;
   for (const m of MAPS) if (worlds.has(m.id)) describe(mapButton(m.id), worlds.get(m.id));
   buildHidingChoices();
@@ -81,6 +108,39 @@ function repaintStart() {
 function fillChoice(btn, key) {
   btn.innerHTML = `<b>${esc(t(`${key}.name`))}</b><small>${esc(t(`${key}.hint`))}</small>`;
 }
+
+// ---- the round you left ------------------------------------------------
+
+// A snapshot found at boot, if there is one. Read once: the start screen may
+// be repainted several times before anyone presses anything, and re-reading
+// storage each time buys nothing.
+const held = readSave();
+
+/** Say what is being offered, in enough detail to recognise it. A resumed
+ *  round is only worth offering if you can tell which one it is. */
+function showResumeCard() {
+  const box = $("resume");
+  if (!held) { box.hidden = true; return; }
+  const map = t(`map.${held.mapId}.name`) || held.mapId;
+  const clock = formatDuration(held.round?.clock ?? 0);
+  const names = held.match?.names ?? [];
+  const hider = names[held.match?.hiderIndex ?? 0];
+  const seeker = names[1 - (held.match?.hiderIndex ?? 0)];
+  const what =
+    held.phase === "hiding" ? t("resume.hiding", { map, round: held.match?.round ?? 1, hider })
+    : held.round?.status === "found" ? t("resume.found", { map, clock })
+    : held.match ? t("resume.match", { map, round: held.match.round, seeker, hider, clock })
+    : t("resume.solo", { map, clock, n: held.round?.candidates.length ?? 0 });
+  const at = new Date(held.at).toLocaleTimeString(currentLang(), { hour: "2-digit", minute: "2-digit" });
+  $("resumewhat").textContent = `${what} · ${t("resume.saved", { time: at })}`;
+  box.hidden = false;
+}
+
+$("resumego").addEventListener("click", () => resume(held));
+$("resumedrop").addEventListener("click", () => {
+  clearSave();
+  $("resume").hidden = true;
+});
 
 // ---- map picker --------------------------------------------------------
 
@@ -417,11 +477,10 @@ if (params.has("go")) start();
 
 // ---- the run -----------------------------------------------------------
 
-function start() {
-  // Everything the start screen holds has to be read before it is torn down.
-  baseSeed = Number($("seed").value) || Math.floor(Math.random() * 1e6);
-  const names = playerNames();
-  $("start").remove();
+/** Tear the start screen down and put the board up. Shared by a new game and
+ *  a resumed one, which differ only in where the state comes from. */
+function openBoard() {
+  $("start")?.remove();
   $("app").hidden = false;
 
   // One map for the whole match. Rebuilding five hundred markers between
@@ -435,11 +494,53 @@ function start() {
         .openPopup();
     },
   });
+}
+
+function start() {
+  // Everything the start screen holds has to be read before it is torn down.
+  baseSeed = Number($("seed").value) || Math.floor(Math.random() * 1e6);
+  const names = playerNames();
+  // Starting is choosing to abandon whatever was held. Done here rather than
+  // on the Continue card's discard button so that every way of starting a new
+  // game clears it, including ?go=1.
+  clearSave();
+  openBoard();
 
   if (players === "pass") {
     match = new Match({ names, seed: baseSeed, hidingMinutes });
   }
   playRound();
+}
+
+/**
+ * Pick a saved round up where it was left.
+ *
+ * Deliberately in the language it was played in rather than the one the start
+ * screen happens to be showing: the log is a transcript, already written, and
+ * a Czech transcript under an English panel reads worse than a language that
+ * quietly went back to what you were using.
+ */
+async function resume(snap) {
+  try {
+    selectLang(snap.lang);
+    world = await getWorld(snap.mapId);
+    players = snap.players;
+    difficulty = snap.difficulty;
+    cards = snap.cards;
+    hidingMinutes = snap.hidingMinutes;
+    baseSeed = snap.baseSeed;
+    match = restoreMatch(world, snap);
+    openBoard();
+    // Saved before the handover, so the hider had not chosen yet: the round
+    // has nothing in it to restore and simply starts again.
+    if (snap.phase === "hiding") { playRound(); return; }
+    beginRound(restore(world, snap), null);
+  } catch (err) {
+    // A snapshot that will not load is worse than no snapshot: it would sit
+    // on the start screen offering a round that never opens.
+    clearSave();
+    location.reload();
+  }
 }
 
 /**
@@ -451,11 +552,10 @@ function start() {
  * stop, the answers are true of that stop, and the clock is running.
  */
 async function playRound() {
-  // From here to the find the phone is a game board: minutes of looking at a
-  // map without touching it, and -- in a match -- a handover that a lock
-  // screen would turn into a spoiler. Asked once per round rather than once
-  // per session, because rounds are where it matters and roundOver() gives it
-  // straight back.
+  // The hiding phase is a screen someone is reading and tapping, and the
+  // round that follows is twenty minutes of looking at a map without touching
+  // it. beginRound asks again; the lock is per round rather than per session
+  // because rounds are where it matters and roundOver() gives it straight back.
   keepAwake();
 
   const seed = match ? match.roundSeed() : baseSeed;
@@ -468,6 +568,10 @@ async function playRound() {
   // tools/2ptest.html -- can reach the hiding phase, which is a whole screen
   // of the game that happens before there is any game state to expose.
   window.__debug = { phase: "hiding", gmap, match, start, range };
+  // Written down before the handover: closing the app while the hider is
+  // still choosing resumes into the same round rather than losing it. There
+  // is no state to keep yet, only how the round was set up.
+  keep(null);
 
   let hiderStationId = null;
   if (match) {
@@ -503,6 +607,29 @@ async function playRound() {
     difficulty: match ? "fair" : difficulty,
     seed, startId: start.id, hidingMinutes, hiderStationId, cards,
   });
+  // Frame the round rather than the map. The candidate set used to be the
+  // whole network, so the whole network was the right view; now it opens as a
+  // cluster an hour wide, and fitting the bbox of a region leaves the game
+  // being played in one corner of the screen.
+  beginRound(state, (s) => [start, ...s.candidates]);
+}
+
+/**
+ * Wire a round up and put it on screen.
+ *
+ * Split out of playRound because a resumed round needs every line of it and
+ * none of the hiding phase above: from here down there is no difference
+ * between a state `newGame` just built and one `js/save.js` put back.
+ *
+ * @param {function|null} frame  which stops to fit the map to, or null to
+ *   frame what is left -- a resumed round opens on the search still to do,
+ *   not on where it started an hour ago.
+ */
+function beginRound(state, frame) {
+  // From here to the find the phone is a game board: minutes of looking at a
+  // map without touching it, and -- in a match -- a handover that a lock
+  // screen would turn into a spoiler.
+  if (state.status === "playing") keepAwake(); else releaseWake();
 
   let recorded = false;
   const roundOver = () => {
@@ -521,6 +648,7 @@ async function playRound() {
       if (!res.ok) return;
       gmap.showConstraint(state, q, res.answer);
       ui.refresh();
+      keep(state);
     },
     travel: (station) => {
       const before = state.pendingThermo;
@@ -534,24 +662,29 @@ async function playRound() {
       }
       roundOver();
       ui.refresh();
+      keep(state);
     },
-    challenge: (input) => { challengeStep(state, input); },
+    challenge: (input) => { challengeStep(state, input); keep(state); },
     nextRound: () => {
       match.advance(state.hider.committed.id);
       gmap.reset();
       playRound();
     },
+    // "New run" reloads, and a reload would otherwise land on a start screen
+    // offering to continue the round that has just been finished with.
+    newRun: () => { clearSave(); location.reload(); },
   }, { match });
 
   gmap.render(state);
-  // Frame the round rather than the map. The candidate set used to be the
-  // whole network, so the whole network was the right view; now it opens as a
-  // cluster an hour wide, and fitting the bbox of a region leaves the game
-  // being played in one corner of the screen. Once, at the start: the set
-  // shrinks all through a run, and a map that kept re-zooming under the
-  // player's hands would be unusable.
-  gmap.fitStops([start, ...state.candidates]);
+  // Once, when the round opens: the set shrinks all through a run, and a map
+  // that kept re-zooming under the player's hands would be unusable.
+  gmap.fitStops(frame ? frame(state) : [seekerStop(state), ...state.candidates]);
   // Exposed for the console while playing, and for tools/uitest.html.
-  window.__debug = { phase: "seeking", state, ui, gmap, match, start, range,
+  window.__debug = { phase: "seeking", state, ui, gmap, match,
+                     start: world.byId.get(state.startId),
+                     range: state.hiding,
                      ask, travel, challengeStep, journey };
+  keep(state);
 }
+
+const seekerStop = (state) => state.world.byId.get(state.seekerId);

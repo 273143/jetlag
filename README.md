@@ -7,8 +7,10 @@ map and close the net. Your score is the clock when you find them, and lower is
 better.
 
 It plays in **Czech or English** — the picker is the first thing on the start
-screen — and with or without the hider's deck of cards and curses. See
-[Czech and English](#czech-and-english) and [Cards, or no cards](#cards-or-no-cards).
+screen — and with or without the hider's deck of cards and curses. Close it
+mid-round and it offers the round back when you return. See
+[Czech and English](#czech-and-english), [Cards, or no cards](#cards-or-no-cards)
+and [Losing the round](#losing-the-round-and-not-losing-it).
 
 Play it on your own against the app, or **two of you on one phone**: one hides
 and passes the device over, the other seeks, and whoever is found is found
@@ -536,6 +538,63 @@ A person hiding in a two-player match is a fair hider by construction — they
 chose a stop before the clock started and the app answers from it — so the
 choice does not appear on the start screen when there are two of you.
 
+## Losing the round, and not losing it
+
+This happened, and it is the dullest possible way to lose an evening: the app
+was closed by accident, and forty minutes of deduction went with it. Nothing
+had gone wrong with the game. The game had simply never been written down.
+
+A round is now saved after every action, and the start screen offers it back:
+
+```
+┌────────────────────────────────────────────────────────┐
+│ Rozehraná hra                                          │
+│ Brno · 28 min na hodinách · zbývá 222 možností         │
+│ uloženo v 10:35                                        │
+│  [ Pokračovat ]  [ Zahodit ]                           │
+└────────────────────────────────────────────────────────┘
+```
+
+It comes back whole: the clock, every answer in the log, which stops you have
+searched, the hider's hand, an unfinished thermometer, and a curse minigame you
+were halfway through. In a match it also brings the standings, whose round it
+is, and where the next one starts.
+
+**What is actually stored is small**, and that is the design. The engine is
+deterministic, so a round is `newGame(...)` plus everything that has happened
+since; a snapshot is those arguments and the mutable half of the state, and
+restoring is `newGame` again with the mutable half laid back over the top. The
+question catalogue, the hiding window, the reachability search and the travel
+view all rebuild themselves exactly as they did the first time. Recomputing
+what can be recomputed is far safer than serialising it, and it means most of
+the game cannot drift out of step with the save format because it is not in it.
+
+The part that had to be got right is the randomness. `state.rng` and the
+hider's own generator are closures, and the obvious thing — store the seed —
+is quietly wrong: the round would come back with the right clock and then draw
+a different deck and cast different curses from that moment on. `mulberry32`'s
+entire state is one 32-bit word, so the *position* is saved and the generator
+re-seeded with it, which continues the identical stream.
+
+That is also why the test does not just compare two states. It plays a round
+partway, snapshots it, restores it, and then drives the original and the copy
+through exactly the same decisions to the end, asserting they stay identical
+down to the text of the log. A rerolled deck looks perfect at the moment of
+restore and diverges on the next card; only replaying catches it. Checked
+against three deliberately broken versions — a generator reseeded from its
+seed, a dropped `checked` set, a dropped hand — the test fails 11, 52 and 24
+times respectively, so it is measuring something.
+
+One slot, not a list of saves: the problem being solved is losing the round you
+are in. It is dropped after a day, discarded rather than half-read if the
+format has changed, and every path through local storage is wrapped, because a
+private window that refuses to store anything should cost you nothing more than
+this feature. Starting a new game clears it; so does **Zahodit**.
+
+Worth knowing before this goes anywhere shared: the hiding place is in the
+snapshot, because the app has to answer questions from it. That is no more
+exposed than the running page already was, but it is now written to disk.
+
 ## Two players, one device
 
 The rulebook's match is a series of rounds in which everyone hides once, and
@@ -652,6 +711,7 @@ CLAUDE.md             the short version, for coding agents
 index.html            shell
 js/rules.js           every tunable number, and why it has that value
 js/i18n.js            every user-facing string, Czech and English side by side
+js/save.js            writing a half-played round down, and putting it back
 js/timetable.js       departures, the board, and time-dependent journeys
 js/questions.js       the question catalogue
 js/data.js            map loading and line-aware routing
@@ -673,7 +733,8 @@ tools/survey_pois.py      scores candidate POI categories as questions
 tools/i18ncheck.js    the two dictionaries against each other and the code
 tools/test.sh         engine self-test, across every map
 tools/uitest.sh       drives the real interface: a whole run, a whole
-                      two-player match on each map, and the offline nag
+                      two-player match on each map, closing the app
+                      mid-round, and the offline nag
 ```
 
 The trick that keeps the game honest is in `js/questions.js`: each question is
@@ -744,8 +805,8 @@ The engine test asserts the things that would ruin the game silently: the hider
 is never eliminated by their own answer, the candidate set never empties, the
 seeker's view and the hider's view never disagree, every candidate is inside the
 head start the seeker was told about, every journey's wait and time on board add
-up to what it charges, a deck-free run really is deck-free, and every run
-terminates. It also reports
+up to what it charges, a deck-free run really is deck-free, a saved round comes
+back identical *and carries on identically*, and every run terminates. It also reports
 which curses and powerups actually fired, so a feature that has quietly become
 unreachable shows up as a missing line rather than as code that looks
 implemented — and how many distinct stops thirty rounds started at, because "the
@@ -756,7 +817,8 @@ time.
 once more in English — the assertions read the dictionary rather than English
 literals, so a test that only ever passed in one language is not possible. It
 also drives a whole two-player match per map, through the real handover and
-hiding screens. What it is really checking is that the seeker is
+hiding screens, and closes and reopens the app mid-round — solo and as a match
+— through the real start screen. What it is really checking is that the seeker is
 handed nothing they should not have: not the hiding place in the handover text,
 and not a tooltip left open on the map.
 

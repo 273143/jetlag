@@ -23,6 +23,7 @@ file you edit is live on the next reload.
 | 7 | [Presentation](#7-presentation) | `js/ui.js`, `js/map.js`, `index.html`, `css/style.css` | change the panel, the map, the sheets, the styling |
 | 7b | [Words](#7b-words) | `js/i18n.js` | change any wording, or add a language |
 | 8 | [Bootstrap](#8-bootstrap) | `js/main.js` | change the start screen, URL params, round wiring |
+| 8b | [Keeping a round](#8b-keeping-a-round) | `js/save.js` | change what survives the app being closed |
 | 9 | [Offline and install](#9-offline-and-install) | `sw.js`, `js/offline.js`, `js/wakelock.js`, `manifest.webmanifest` | change caching, tile packs, the screen lock, the PWA |
 | 10 | [Tooling](#10-tooling) | `tools/*` | rebuild a map, measure a constant, run the tests |
 
@@ -365,6 +366,49 @@ immediately), `?fresh=1` (unregister the service worker and empty the app
 cache). `window.__debug` is set every round — `{ phase, state, ui, gmap, match,
 start, range, ask, travel, journey, … }` — and is what the UI tests drive.
 
+## 8b. Keeping a round
+
+**`js/save.js`** writes a half-played round to local storage so closing the
+app does not lose it.
+
+What is stored is *the minimum that cannot be recomputed*, because the rest of
+the engine is deterministic and recomputing is far safer than serialising. A
+round is `newGame(world, {seed, startId, difficulty, cards, hidingMinutes})`
+plus everything that has happened since — so a snapshot is those arguments and
+the mutable half of the state, and `restore` is `newGame` again followed by the
+mutable half put back over the top. The question catalogue, the hiding window,
+the reachability search and `state.travel` all rebuild themselves, which is why
+none of them are in the file.
+
+Three things needed care:
+
+- **The random streams.** `state.rng` and `hider.rng` are closures; their whole
+  state is the one word `mulberry32` keeps, exposed as `rng.position()`. Saving
+  the position and re-seeding with it continues the identical stream. Save the
+  *seed* instead and a resumed round keeps its clock and quietly rerolls the
+  deck and every curse — which looks perfect at the moment of restore.
+- **Sets, Maps and stations.** None survive JSON. A station is stored by id and
+  looked up on the way back, so a restored candidate is the same object the
+  rest of the game compares against.
+- **The hiding place is in the snapshot**, because the app has to answer from
+  it. No worse than `window.__debug`, but worth knowing.
+
+`main.js` calls `keep(state)` after every handler that moves the state, plus
+once before the handover so a round closed during the hiding phase resumes into
+the same round. One slot, versioned (an old snapshot is discarded, never
+half-read), and dropped after 24 hours.
+
+The start screen offers it back on a card above everything else, with what it
+is — map, clock, how many stops are left, or in a match the round and both
+players. Resuming switches to the language the round was played in: the log is
+a transcript that has already been written.
+
+`tools/selftest.html` round-trips a state through JSON and then drives the
+original and the copy through the same decisions, asserting they stay identical
+— a field-by-field comparison at the moment of restore cannot see a rerolled
+deck. `tools/resumetest.html` does the whole thing through the real start
+screen, solo and as a match.
+
 ## 9. Offline and install
 
 **`sw.js`** precaches the app shell (`SHELL_FILES`) and serves app files
@@ -395,14 +439,15 @@ best-effort -- unsupported or refused changes nothing about the game.
 | `./run.sh` | serve on :8080 |
 | `./tools/test.sh` | the dictionary check, then 60 automated runs, invariants, and what actually fired |
 | `node tools/i18ncheck.js` | the two dictionaries against each other and against the code |
-| `./tools/uitest.sh` | drives the real UI: a full run per map, one with cards off, one in English, a full two-player match per map, then the offline nag and the phone-sized layout |
+| `./tools/uitest.sh` | drives the real UI: a full run per map, one with cards off, one in English, a full two-player match per map, closing and resuming the app, then the offline nag and the phone-sized layout |
 | `./tools/shot.sh 'index.html?go=1' out.png` | headless screenshot, for looking at the UI without a display |
 | `python3 tools/build_map.py all` | rebuild `data/*.json` from OpenStreetMap |
 | `python3 tools/survey_pois.py brno` | score candidate POI categories as questions |
 | `python3 tools/tune_tentacles.py brno` | pick Tentacles radii by measurement |
 
 Test pages: `tools/selftest.html` (engine), `tools/uitest.html` (one run),
-`tools/2ptest.html` (a whole match), `tools/nagtest.html` (the offline sheet in
+`tools/2ptest.html` (a whole match), `tools/resumetest.html` (closing the app
+mid-round and picking it back up, solo and as a match), `tools/nagtest.html` (the offline sheet in
 front of Start — it detects whether the browser has a working Cache API and
 asserts the fallback instead where it does not), `tools/phonetest.html` (the
 full-screen overlays at 412x915 and 360x640) — the shell scripts above are thin wrappers
@@ -466,7 +511,11 @@ game.ask(state, q)                 game.travel(state, id)
 8. **Numbers live in `js/rules.js`** with the measurement that produced them,
    and **words live in `js/i18n.js`**, in both languages, checked by
    `tools/i18ncheck.js`.
-9. **A journey's `wait` and `onboard` sum to what it charges.** The seeker
+9. **A resumed round is the same round.** Anything added to the state must be
+   added to `snapshot`/`restore` in `js/save.js`, and anything that consumes
+   randomness must go through a generator whose position is saved. Asserted by
+   `tools/test.sh`, which replays both copies rather than just comparing them.
+10. **A journey's `wait` and `onboard` sum to what it charges.** The seeker
    decides on the split as much as on the total; a split that did not add up
    would be a lie nothing else in the game would notice. Asserted by
    `tools/test.sh`.
@@ -487,6 +536,8 @@ game.ask(state, q)                 game.travel(state, id)
 | change journey cost or departures | `js/timetable.js` (Brno) or `travelTimes` in `js/data.js` (region) |
 | change what a journey shows before it is paid for | `journey` in `js/game.js`, `journeyHtml` in `js/ui.js` |
 | change what the deck-free game removes | the `cards` guards in `js/game.js` and `js/hider.js` |
+| add a field to the game state | `js/game.js` — **and** `snapshot`/`restore` in `js/save.js` |
+| change what survives the app closing | `js/save.js`; bump `VERSION` if the shape changes |
 | change the map's colours or dots | `js/map.js` + the custom properties in `css/style.css` |
 | change the panel, sheets or wording | `js/ui.js` |
 | change the round or match flow | `js/main.js`, `js/match.js`, `js/hidephase.js` |
